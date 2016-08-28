@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <assert.h>
+#include <inttypes.h>
 
 #define PROMPT "> "
 
@@ -343,16 +342,16 @@ scan32_full(struct watchlist *wl, uint32_t value)
     region_iterator_destroy(it);
 }
 
+typedef void (*region_visitor)(char *, const void *, void *);
+
 static void
-scan32_narrow(struct watchlist *wl, uint32_t value)
+region_visit(struct watchlist *wl, region_visitor f, void *arg)
 {
-    struct watchlist out[1];
-    watchlist_init(out, wl->process);
     struct region_iterator it[1];
     region_iterator_init(it, wl->process);
     size_t n = 0;
     for (; !region_iterator_done(it) && n < wl->count; region_iterator_next(it)) {
-        uint32_t *buf = NULL;
+        char *buf = NULL;
         char *base = it->base;
         char *tail = base + it->size;
         while (n < wl->count && wl->values[n] < base)
@@ -364,12 +363,36 @@ scan32_narrow(struct watchlist *wl, uint32_t value)
                              it->base, os_last_error());
                 }
             ptrdiff_t d = wl->values[n] - base;
-            if (buf[d / sizeof(buf[0])] == value)
-                watchlist_push(out, wl->values[n]);
+            f(wl->values[n], buf + d, arg);
             n++;
         }
     }
     region_iterator_destroy(it);
+}
+
+struct visitor_state {
+    struct watchlist *wl;
+    uint32_t value;
+};
+
+static void
+narrow_visitor(char *addr, const void *memory, void *arg)
+{
+    struct visitor_state *s = arg;
+    if (*(uint32_t *)memory == s->value)
+        watchlist_push(s->wl, addr);
+}
+
+static void
+scan32_narrow(struct watchlist *wl, uint32_t value)
+{
+    struct watchlist out[1];
+    watchlist_init(out, wl->process);
+    struct visitor_state state = {
+        .wl = out,
+        .value = value
+    };
+    region_visit(wl, narrow_visitor, &state);
     watchlist_free(wl);
     *wl = *out;
 }
@@ -386,7 +409,7 @@ display_memory_regions(os_handle target)
             it->flags & REGION_ITERATOR_EXECUTE ? 'X' : ' ',
         };
         void *tail = (char *)it->base + it->size;
-        printf("%s 0x%p 0x%p %10zu bytes\n",
+        printf("%s %p %p %10zu bytes\n",
                protect, it->base, tail, it->size);
     }
     region_iterator_destroy(it);
@@ -509,6 +532,13 @@ memdig_init(struct memdig *m)
     *m = (struct memdig){0, 0};
 }
 
+static void
+list_visitor(char *addr, const void *mem, void *arg)
+{
+    (void)arg;
+    printf("%p %" PRIu32 "\n", addr, *(uint32_t *)mem);
+}
+
 enum memdig_result {
     MEMDIG_RESULT_ERROR = -1,
     MEMDIG_RESULT_OK = 0,
@@ -595,8 +625,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 case 'a': {
                     if (!m->target)
                         LOG_ERROR("no process attached\n");
-                    for (size_t i = 0; i < m->watchlist.count; i++)
-                        printf("0x%p\n", m->watchlist.values[i]);
+                    region_visit(&m->watchlist, list_visitor, 0);
                 } break;
                 case 'p': {
                     struct process_iterator it[1];
