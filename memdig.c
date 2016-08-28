@@ -11,25 +11,25 @@
 #define REGION_ITERATOR_READ    (1UL << 1)
 #define REGION_ITERATOR_WRITE   (1UL << 2)
 #define REGION_ITERATOR_EXECUTE (1UL << 3)
-struct region_iterator;
-
-enum os_find_result {
-    OS_FIND_SUCCESS,
-    OS_FIND_FAILURE,
-    OS_FIND_AMBIGUOUS,
-};
 
 #if 0 // (missing typedefs)
-int   region_iterator_next(struct region_iterator *);
+struct process_iterator;
+int   process_iterator_init(struct process_iterator *);
+int   process_iterator_next(struct process_iterator *);
+int   process_iterator_done(struct process_iterator *);
+void  process_iterator_destroy(struct process_iterator *);
+
+struct region_iterator;
 int   region_iterator_init(struct region_iterator *, os_handle);
+int   region_iterator_next(struct region_iterator *);
 int   region_iterator_done(struct region_iterator *);
 void *region_iterator_memory(struct region_iterator *);
 void  region_iterator_destroy(struct region_iterator *);
+
 int os_write_memory(os_handle, void *, void *, size_t);
 void  os_sleep(double);
 os_handle os_process_open(os_pid);
 void os_process_close(os_handle);
-enum os_find_result os_process_find(const char *, os_pid *);
 const char *os_last_error(void);
 #endif
 
@@ -41,6 +41,55 @@ const char *os_last_error(void);
 
 typedef HANDLE os_handle;
 typedef DWORD os_pid;
+
+struct process_iterator {
+    os_pid pid;
+    char *name;
+
+    // private
+    HANDLE snapshot;
+    char buf[MAX_PATH];
+    int done;
+    PROCESSENTRY32 entry;
+};
+
+static int
+process_iterator_next(struct process_iterator *i)
+{
+    if (Process32Next(i->snapshot, &i->entry)) {
+        strcpy(i->name, i->entry.szExeFile);
+        i->pid = i->entry.th32ProcessID;
+        return 1;
+    } else {
+        return !(i->done = 1);
+    }
+}
+
+static int
+process_iterator_init(struct process_iterator *i)
+{
+    i->entry = (PROCESSENTRY32){sizeof(i->entry)};
+    i->done = 0;
+    i->name = i->buf;
+    i->snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    PROCESSENTRY32 entry[1] = {{sizeof(entry)}};
+    if (Process32First(i->snapshot, entry))
+        return process_iterator_next(i);
+    else
+        return !(i->done = 1);
+}
+
+static int
+process_iterator_done(struct process_iterator *i)
+{
+    return i->done;
+}
+
+static void
+process_iterator_destroy(struct process_iterator *i)
+{
+    CloseHandle(i->snapshot);
+}
 
 struct region_iterator {
     void *p;
@@ -171,26 +220,6 @@ static void
 os_process_close(os_handle h)
 {
     CloseHandle(h);
-}
-
-static enum os_find_result
-os_process_find(const char *pattern, os_pid *pid)
-{
-    PROCESSENTRY32 entry[1] = {{sizeof(entry)}};
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (Process32First(snapshot, entry)) {
-        while (Process32Next(snapshot, entry)) {
-            char *exe = entry->szExeFile;
-            if (strstr(exe, pattern)) {
-                if (*pid)
-                    return OS_FIND_AMBIGUOUS;
-                *pid = entry->th32ProcessID;
-            }
-        }
-    }
-    if (!*pid)
-        return OS_FIND_FAILURE;
-    return OS_FIND_SUCCESS;
 }
 
 static char error_buffer[4096];
@@ -363,6 +392,33 @@ display_memory_regions(os_handle target)
     region_iterator_destroy(it);
 }
 
+/* Processes */
+
+enum find_result {
+    FIND_SUCCESS,
+    FIND_FAILURE,
+    FIND_AMBIGUOUS,
+};
+
+static os_pid
+process_find(const char *pattern, os_pid *pid)
+{
+    struct process_iterator it[1];
+    process_iterator_init(it);
+    *pid = 0;
+    for (; !process_iterator_done(it); process_iterator_next(it)) {
+        if (strstr(it->name, pattern)) {
+            if (*pid)
+                return FIND_AMBIGUOUS;
+            *pid = it->pid;
+        }
+    }
+    process_iterator_destroy(it);
+    if (!*pid)
+        return FIND_FAILURE;
+    return FIND_SUCCESS;
+}
+
 /* Command processing */
 
 enum command {
@@ -479,14 +535,14 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 m->target = 0;
             }
             char *pattern = argv[1];
-            switch (os_process_find(pattern, &m->id)) {
-                case OS_FIND_FAILURE:
+            switch (process_find(pattern, &m->id)) {
+                case FIND_FAILURE:
                     LOG_ERROR("no process found for '%s'\n", pattern);
                     break;
-                case OS_FIND_AMBIGUOUS:
+                case FIND_AMBIGUOUS:
                     LOG_ERROR("ambiguous target '%s'\n", pattern);
                     break;
-                case OS_FIND_SUCCESS:
+                case FIND_SUCCESS:
                     if (!(m->target = os_process_open(m->id))) {
                         if (!m->target)
                             LOG_ERROR("open process %ld failed: %s\n",
