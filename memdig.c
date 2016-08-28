@@ -581,7 +581,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 LOG_ERROR("wrong number of arguments");
             if (m->target) {
                 watchlist_free(&m->watchlist);
-                CloseHandle(m->target);
+                os_process_close(m->target);
                 m->target = 0;
             }
             char *pattern = argv[1];
@@ -643,7 +643,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                     struct process_iterator it[1];
                     process_iterator_init(it);
                     for (; !process_iterator_done(it); process_iterator_next(it))
-                        printf("%8ld %s\n", it->pid, it->name);
+                        printf("%8ld %s\n", (long)it->pid, it->name);
                     process_iterator_destroy(it);
                 } break;
                 default: {
