@@ -11,6 +11,8 @@
 #define REGION_ITERATOR_WRITE   (1UL << 2)
 #define REGION_ITERATOR_EXECUTE (1UL << 3)
 
+#define PROCESS_ITERATOR_DONE   (1UL << 0)
+
 #if 0 // (missing typedefs)
 struct process_iterator;
 int   process_iterator_init(struct process_iterator *);
@@ -44,11 +46,11 @@ typedef DWORD os_pid;
 struct process_iterator {
     os_pid pid;
     char *name;
+    unsigned long flags;
 
     // private
     HANDLE snapshot;
     char buf[MAX_PATH];
-    int done;
     PROCESSENTRY32 entry;
 };
 
@@ -58,9 +60,9 @@ process_iterator_next(struct process_iterator *i)
     if (Process32Next(i->snapshot, &i->entry)) {
         strcpy(i->name, i->entry.szExeFile);
         i->pid = i->entry.th32ProcessID;
-        return 1;
+        return !(i->flags = 0);
     } else {
-        return !(i->done = 1);
+        return !(i->flags = PROCESS_ITERATOR_DONE);
     }
 }
 
@@ -68,20 +70,14 @@ static int
 process_iterator_init(struct process_iterator *i)
 {
     i->entry = (PROCESSENTRY32){sizeof(i->entry)};
-    i->done = 0;
+    i->flags = PROCESS_ITERATOR_DONE;
     i->name = i->buf;
     i->snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     PROCESSENTRY32 entry[1] = {{sizeof(entry)}};
     if (Process32First(i->snapshot, entry))
         return process_iterator_next(i);
     else
-        return !(i->done = 1);
-}
-
-static int
-process_iterator_done(struct process_iterator *i)
-{
-    return i->done;
+        return 0;
 }
 
 static void
@@ -158,12 +154,6 @@ region_iterator_init(struct region_iterator *i, os_handle process)
 {
     *i = (struct region_iterator){.process = process};
     return region_iterator_next(i);
-}
-
-static int
-region_iterator_done(struct region_iterator *i)
-{
-    return !!(i->flags & REGION_ITERATOR_DONE);
 }
 
 static void *
@@ -257,9 +247,9 @@ typedef pid_t os_pid;
 struct process_iterator {
     os_pid pid;
     char *name;
+    unsigned long flags;
 
     // private
-    int done;
     size_t i;
     size_t count;
     pid_t *pids;
@@ -271,7 +261,7 @@ process_iterator_next(struct process_iterator *i)
 {
     for (;;) {
         if (i->i == i->count)
-            return !(i->done = 1);
+            return !(i->flags = PROCESS_ITERATOR_DONE);
         i->pid = i->pids[++i->i];
         sprintf(i->buf, "/proc/%ld/status", (long)i->pid);
         FILE *f = fopen(i->buf, "r");
@@ -284,7 +274,7 @@ process_iterator_next(struct process_iterator *i)
                     if (*p == '\n')
                         *p = 0;
                 fclose(f);
-                return 1;
+                return !(i->flags = 0);
             } else {
                 fclose(f);
             }
@@ -304,7 +294,8 @@ process_iterator_init(struct process_iterator *i)
     size_t size = 4096;
     *i = (struct process_iterator){
         .i = (size_t)-1,
-        .pids = malloc(sizeof(i->pids[0]) * size)
+        .pids = malloc(sizeof(i->pids[0]) * size),
+        .flags = PROCESS_ITERATOR_DONE,
     };
     DIR *dir = opendir("/proc");
     if (!dir)
@@ -326,13 +317,6 @@ process_iterator_init(struct process_iterator *i)
     qsort(i->pids, i->count, sizeof(i->pids[0]), pid_cmp);
     closedir(dir);
     return process_iterator_next(i);
-}
-
-
-static int
-process_iterator_done(struct process_iterator *i)
-{
-    return i->done;
 }
 
 static void
@@ -402,12 +386,6 @@ region_iterator_init(struct region_iterator *i, os_handle pid)
         .mem = mem,
     };
     return region_iterator_next(i);
-}
-
-static int
-region_iterator_done(struct region_iterator *i)
-{
-    return !!(i->flags & REGION_ITERATOR_DONE);
 }
 
 static void *
@@ -488,6 +466,18 @@ os_last_error(void)
 }
 
 #endif // __linux__
+
+static int
+process_iterator_done(struct process_iterator *i)
+{
+    return !!(i->flags & PROCESS_ITERATOR_DONE);
+}
+
+static int
+region_iterator_done(struct region_iterator *i)
+{
+    return !!(i->flags & REGION_ITERATOR_DONE);
+}
 
 /* Logging */
 
