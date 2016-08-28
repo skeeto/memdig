@@ -463,6 +463,7 @@ enum command {
     COMMAND_MEMORY,
     COMMAND_FIND,
     COMMAND_NARROW,
+    COMMAND_PUSH,
     COMMAND_LIST,
     COMMAND_SET,
     COMMAND_WAIT,
@@ -490,6 +491,10 @@ static struct {
     [COMMAND_NARROW] = {
         "narrow", "filter the current list of addresses",
         "<current value>"
+    },
+    [COMMAND_PUSH] = {
+        "push", "manually add address to list",
+        "<address>"
     },
     [COMMAND_LIST]   = {
         "list", "show the current address list",
@@ -628,6 +633,17 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             long value = strtol(argv[1], NULL, 10);
             scan32_narrow(&m->watchlist, value);
             printf("%zu values remaining\n", m->watchlist.count);
+        } break;
+        case COMMAND_PUSH: {
+            if (!m->target)
+                LOG_ERROR("no process attached\n");
+            if (argc != 2)
+                LOG_ERROR("wrong number of arguments");
+            char *addrs = argv[1];
+            if (strncmp(addrs, "0x", 2) != 0)
+                LOG_ERROR("unknown address format '%s'\n", addrs);
+            uintptr_t addr = strtoull(addrs + 2, NULL, 16);
+            watchlist_push(&m->watchlist, addr);
         } break;
         case COMMAND_LIST: {
             char arg = 'a';
