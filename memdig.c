@@ -458,7 +458,7 @@ static struct {
     },
     [COMMAND_LIST]   = {
         "list", "show the current address list",
-        0
+        "[proc|addr]"
     },
     [COMMAND_SET]    = {
         "set", "set memory at each listed address",
@@ -580,10 +580,27 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             printf("%zu values remaining\n", m->watchlist.count);
         } break;
         case COMMAND_LIST: {
-            if (!m->target)
-                LOG_ERROR("no process attached\n");
-            for (size_t i = 0; i < m->watchlist.count; i++)
-                printf("0x%p\n", m->watchlist.values[i]);
+            char arg = 'a';
+            if (argc > 1)
+                arg = argv[1][0];
+            switch (arg) {
+                case 'a': {
+                    if (!m->target)
+                        LOG_ERROR("no process attached\n");
+                    for (size_t i = 0; i < m->watchlist.count; i++)
+                        printf("0x%p\n", m->watchlist.values[i]);
+                } break;
+                case 'p': {
+                    struct process_iterator it[1];
+                    process_iterator_init(it);
+                    for (; !process_iterator_done(it); process_iterator_next(it))
+                        printf("%8ld %s\n", it->pid, it->name);
+                    process_iterator_destroy(it);
+                } break;
+                default: {
+                    LOG_ERROR("unknown list type '%s'\n", argv[1]);
+                } break;
+            }
         } break;
         case COMMAND_SET: {
             if (!m->target)
