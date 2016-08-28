@@ -173,12 +173,11 @@ os_process_close(os_handle h)
     CloseHandle(h);
 }
 
-static enum os_process_find_result
+static enum os_find_result
 os_process_find(const char *pattern, os_pid *pid)
 {
     PROCESSENTRY32 entry[1] = {{sizeof(entry)}};
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    char *name = 0;
     if (Process32First(snapshot, entry)) {
         while (Process32Next(snapshot, entry)) {
             char *exe = entry->szExeFile;
@@ -186,7 +185,6 @@ os_process_find(const char *pattern, os_pid *pid)
                 if (*pid)
                     return OS_FIND_AMBIGUOUS;
                 *pid = entry->th32ProcessID;
-                name = exe;
             }
         }
     }
@@ -491,12 +489,12 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 case OS_FIND_SUCCESS:
                     if (!(m->target = os_process_open(m->id))) {
                         if (!m->target)
-                            LOG_ERROR("open process %u failed: %s\n",
-                                      m->id, os_last_error());
+                            LOG_ERROR("open process %ld failed: %s\n",
+                                      (long)m->id, os_last_error());
                         m->id = 0;
                     } else {
                         watchlist_init(&m->watchlist, m->target);
-                        printf("attached to %u\n", m->id);
+                        printf("attached to %ld\n", (long)m->id);
                     }
                     break;
             }
@@ -634,5 +632,5 @@ main(int argc, char **argv)
 
 quit:
     memdig_free(memdig);
-    return 0;
+    return result;
 }
