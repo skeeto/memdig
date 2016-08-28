@@ -337,8 +337,8 @@ scan32_full(struct watchlist *wl, uint32_t value)
                     watchlist_push(wl, it->base + i * sizeof(buf[0]));
             }
         } else {
-            LOG_INFO("memory read failed [%p]: %s\n",
-                     (void *)it->base, os_last_error());
+            LOG_INFO("memory read failed [0x%016" PRIxPTR "]: %s\n",
+                     it->base, os_last_error());
         }
     }
     region_iterator_destroy(it);
@@ -387,8 +387,8 @@ narrow_visitor(uintptr_t addr, const void *memory, void *arg)
         if (*(uint32_t *)memory == s->value)
             watchlist_push(s->wl, addr);
     } else {
-        LOG_INFO("memory read failed [%p]: %s\n",
-                 (void *)addr, os_last_error());
+        LOG_INFO("memory read failed [0x%016" PRIxPTR "]: %s\n",
+                 addr, os_last_error());
     }
 }
 
@@ -418,8 +418,8 @@ display_memory_regions(os_handle target)
             it->flags & REGION_ITERATOR_EXECUTE ? 'X' : ' ',
         };
         uintptr_t tail = it->base + it->size;
-        printf("%s %p %p %10zu bytes\n",
-               protect, (void *)it->base, (void *)tail, it->size);
+        printf("%s 0x%016" PRIxPTR " 0x%016" PRIxPTR " %10zu bytes\n",
+               protect, it->base, tail, it->size);
     }
     region_iterator_destroy(it);
 }
@@ -551,9 +551,9 @@ list_visitor(uintptr_t addr, const void *mem, void *arg)
 {
     (void)arg;
     if (mem)
-        printf("%p %" PRIu32 "\n", (void *)addr, *(uint32_t *)mem);
+        printf("0x%016" PRIxPTR " %" PRIu32 "\n", addr, *(uint32_t *)mem);
     else
-        printf("%p ???\n", (void *)addr);
+        printf("0x%016" PRIxPTR " ???\n", addr);
 }
 
 enum memdig_result {
