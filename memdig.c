@@ -349,7 +349,8 @@ struct region_iterator {
 
     //private
     pid_t pid;
-    FILE *mem;
+    FILE *maps;
+    int mem;
     char *buf;
     size_t bufsize;
 };
@@ -359,14 +360,14 @@ region_iterator_next(struct region_iterator *i)
 {
     char perms[8];
     uintptr_t beg, end;
-    int r = fscanf(i->mem, "%" SCNxPTR "-%" SCNxPTR " %7s", &beg, &end, perms);
+    int r = fscanf(i->maps, "%" SCNxPTR "-%" SCNxPTR " %7s", &beg, &end, perms);
     if (r != 3) {
         i->flags = REGION_ITERATOR_DONE;
         return 0;
     }
     int c;
     do
-        c = fgetc(i->mem);
+        c = fgetc(i->maps);
     while (c != '\n' && c != EOF);
     i->base = beg;
     i->size = end - beg;
@@ -383,13 +384,21 @@ region_iterator_next(struct region_iterator *i)
 static int
 region_iterator_init(struct region_iterator *i, os_handle pid)
 {
+    i->flags = REGION_ITERATOR_DONE;
     char file[256];
     sprintf(file, "/proc/%ld/maps", (long)pid);
-    FILE *mem = fopen(file, "r");
-    if (!mem)
+    FILE *maps = fopen(file, "r");
+    if (!maps)
         return 0;
+    sprintf(file, "/proc/%ld/mem", (long)pid);
+    int mem = open(file, O_RDONLY);
+    if (mem == -1) {
+        fclose(maps);
+        return 0;
+    }
     *i = (struct region_iterator){
         .pid = pid,
+        .maps = maps,
         .mem = mem,
     };
     return region_iterator_next(i);
@@ -409,27 +418,19 @@ region_iterator_memory(struct region_iterator *i)
         i->bufsize = i->size;
         i->buf = malloc(i->bufsize);
     }
-
-    char file[256];
-    sprintf(file, "/proc/%ld/mem", (long)i->pid);
-    int fd = open(file, O_RDONLY);
-    if (fd == -1)
+    if (ptrace(PTRACE_ATTACH, i->pid, 0, 0) == -1)
         return NULL;
-    if (ptrace(PTRACE_ATTACH, i->pid, 0, 0) == -1) {
-        close(fd);
-        return NULL;
-    }
     waitpid(i->pid, NULL, 0);
-    int result = pread(fd, i->buf, i->size, i->base) == (ssize_t)i->size;
+    int result = pread(i->mem, i->buf, i->size, i->base) == (ssize_t)i->size;
     ptrace(PTRACE_DETACH, i->pid, 0, 0);
-    close(fd);
     return result ? i->buf : NULL;
 }
 
 static void
 region_iterator_destroy(struct region_iterator *i)
 {
-    fclose(i->mem);
+    close(i->mem);
+    fclose(i->maps);
     free(i->buf);
     i->buf = NULL;
 }
