@@ -406,8 +406,11 @@ process_find(const char *pattern, os_pid *pid)
     struct process_iterator it[1];
     process_iterator_init(it);
     *pid = 0;
+    os_pid target_pid = 0;
+    if (pattern[0] == ':')
+        target_pid = strtol(pattern + 1, NULL, 10);
     for (; !process_iterator_done(it); process_iterator_next(it)) {
-        if (strstr(it->name, pattern)) {
+        if (target_pid == it->pid || strstr(it->name, pattern)) {
             if (*pid)
                 return FIND_AMBIGUOUS;
             *pid = it->pid;
@@ -441,8 +444,8 @@ static struct {
     const char *args;
 } command_info[] = {
     [COMMAND_ATTACH] = {
-        "attach", "operate on a new process",
-        "<pattern>"
+        "attach", "select a new target process",
+        "[:pid|pattern]"
     },
     [COMMAND_MEMORY] = {
         "memory", "list committed memory regions",
@@ -527,7 +530,12 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             LOG_ERROR("unknown command '%s'\n", verb);
         } break;
         case COMMAND_ATTACH: {
-            if (argc != 2)
+            if (argc == 1) {
+                if (m->target)
+                    printf("attached to %ld\n", (long)m->id);
+                else
+                    printf("not attached to a process\n");
+            } else if (argc != 2)
                 LOG_ERROR("wrong number of arguments");
             if (m->target) {
                 watchlist_free(&m->watchlist);
