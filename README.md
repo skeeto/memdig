@@ -46,9 +46,8 @@ the interactive prompt.
 
 ## Supported Platforms
 
-Since it's the largest platform for gaming, only Windows is currently
-supported. However, the platform API is fully abstracted, so support
-for additional platforms could easily be added.
+Currently Windows and Linux are supported. The platform API is fully
+abstracted, so support for additional platforms could be easily added.
 
 ## Future Plans
 

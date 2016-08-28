@@ -238,7 +238,255 @@ os_last_error(void)
     return error_buffer;
 }
 
-#endif // _WIN32
+#elif __linux__
+#include <math.h>
+#include <time.h>
+#include <errno.h>
+#include <string.h>
+
+#include <fcntl.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <sys/ptrace.h>
+
+typedef pid_t os_handle;
+typedef pid_t os_pid;
+
+struct process_iterator {
+    os_pid pid;
+    char *name;
+
+    // private
+    int done;
+    size_t i;
+    size_t count;
+    pid_t *pids;
+    char buf[256];
+};
+
+static int
+process_iterator_next(struct process_iterator *i)
+{
+    for (;;) {
+        if (i->i == i->count)
+            return !(i->done = 1);
+        i->pid = i->pids[++i->i];
+        sprintf(i->buf, "/proc/%ld/status", (long)i->pid);
+        FILE *f = fopen(i->buf, "r");
+        if (f) {
+            if (fgets(i->buf, sizeof(i->buf), f)) {
+                char *p = i->buf;
+                for (; *p && *p != '\t'; p++);
+                i->name = p + (*p ? 1 : 0);
+                for (; *p; p++)
+                    if (*p == '\n')
+                        *p = 0;
+                fclose(f);
+                return 1;
+            } else {
+                fclose(f);
+            }
+        }
+    }
+}
+
+static int
+pid_cmp(const void *a, const void *b)
+{
+    return (int)*(pid_t *)a - (int)*(pid_t *)b;
+}
+
+static int
+process_iterator_init(struct process_iterator *i)
+{
+    size_t size = 4096;
+    *i = (struct process_iterator){
+        .i = (size_t)-1,
+        .pids = malloc(sizeof(i->pids[0]) * size)
+    };
+    DIR *dir = opendir("/proc");
+    if (!dir)
+        return 0;
+    struct dirent *e;
+    while ((e = readdir(dir))) {
+        int valid = 1;
+        for (char *p = e->d_name; *p; p++)
+            if (*p < '0' || *p > '9')
+                valid = 0;
+        if (valid) {
+            if (i->count == size) {
+                size *= 2;
+                i->pids = realloc(i->pids, sizeof(i->pids[0]) * size);
+            }
+            i->pids[i->count++] = atoi(e->d_name);
+        }
+    }
+    qsort(i->pids, i->count, sizeof(i->pids[0]), pid_cmp);
+    closedir(dir);
+    return process_iterator_next(i);
+}
+
+
+static int
+process_iterator_done(struct process_iterator *i)
+{
+    return i->done;
+}
+
+static void
+process_iterator_destroy(struct process_iterator *i)
+{
+    free(i->pids);
+    i->pids = NULL;
+}
+
+struct region_iterator {
+    uintptr_t base;
+    size_t size;
+    unsigned long flags;
+
+    //private
+    pid_t pid;
+    FILE *mem;
+    char *buf;
+    size_t bufsize;
+};
+
+static int
+region_iterator_next(struct region_iterator *i)
+{
+    char perms[8];
+    uintptr_t beg, end;
+    int r = fscanf(i->mem, "%" SCNxPTR "-%" SCNxPTR " %7s", &beg, &end, perms);
+    if (r != 3) {
+        i->flags = REGION_ITERATOR_DONE;
+        return 0;
+    }
+    int c;
+    do
+        c = fgetc(i->mem);
+    while (c != '\n' && c != EOF);
+    i->base = beg;
+    i->size = end - beg;
+    i->flags = 0;
+    if (perms[0] == 'r')
+        i->flags |= REGION_ITERATOR_READ;
+    if (perms[1] == 'w')
+        i->flags |= REGION_ITERATOR_WRITE;
+    if (perms[2] == 'x')
+        i->flags |= REGION_ITERATOR_EXECUTE;
+    return 1;
+}
+
+static int
+region_iterator_init(struct region_iterator *i, os_handle pid)
+{
+    char file[256];
+    sprintf(file, "/proc/%ld/maps", (long)pid);
+    FILE *mem = fopen(file, "r");
+    if (!mem)
+        return 0;
+    *i = (struct region_iterator){
+        .pid = pid,
+        .mem = mem,
+    };
+    return region_iterator_next(i);
+}
+
+static int
+region_iterator_done(struct region_iterator *i)
+{
+    return !!(i->flags & REGION_ITERATOR_DONE);
+}
+
+static void *
+region_iterator_memory(struct region_iterator *i)
+{
+    if (i->bufsize < i->size) {
+        free(i->buf);
+        i->bufsize = i->size;
+        i->buf = malloc(i->bufsize);
+    }
+
+    char file[256];
+    sprintf(file, "/proc/%ld/mem", (long)i->pid);
+    int fd = open(file, O_RDONLY);
+    if (fd == -1)
+        return NULL;
+    if (ptrace(PTRACE_ATTACH, i->pid, 0, 0) == -1) {
+        close(fd);
+        return NULL;
+    }
+    waitpid(i->pid, NULL, 0);
+    int result = pread(fd, i->buf, i->size, i->base) == (ssize_t)i->size;
+    ptrace(PTRACE_DETACH, i->pid, 0, 0);
+    close(fd);
+    return result ? i->buf : NULL;
+}
+
+static void
+region_iterator_destroy(struct region_iterator *i)
+{
+    fclose(i->mem);
+    free(i->buf);
+    i->buf = NULL;
+}
+
+static int
+os_write_memory(os_handle pid, uintptr_t addr, void *buf, size_t bufsize)
+{
+    char file[256];
+    sprintf(file, "/proc/%ld/mem", (long)pid);
+    int fd = open(file, O_WRONLY);
+    if (fd == -1)
+        return 0;
+    if (ptrace(PTRACE_ATTACH, pid, 0, 0) == -1) {
+        close(fd);
+        return 0;
+    }
+    waitpid(pid, NULL, 0);
+    int result = pwrite(fd, buf, bufsize, addr) == (ssize_t)bufsize;
+    ptrace(PTRACE_DETACH, pid, 0, 0);
+    close(fd);
+    return result;
+}
+
+static void
+os_sleep(double s)
+{
+    struct timespec ts = {
+        .tv_sec = s,
+        .tv_nsec = (s - trunc(s)) * 1e9,
+    };
+    nanosleep(&ts, 0);
+}
+
+static os_handle
+os_process_open(os_pid pid)
+{
+    /* Make sure we can attach. */
+    if (ptrace(PTRACE_ATTACH, pid, 0, 0) == -1)
+        return 0;
+    waitpid(pid, NULL, 0);
+    ptrace(PTRACE_DETACH, pid, 0, 0);
+    return pid;
+}
+
+static void
+os_process_close(os_handle h)
+{
+    (void)h; // nothing to do
+}
+
+const char *
+os_last_error(void)
+{
+    return strerror(errno);
+}
+
+#endif // __linux__
 
 /* Logging */
 
