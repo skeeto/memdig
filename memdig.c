@@ -25,7 +25,7 @@ int   region_iterator_done(struct region_iterator *);
 void *region_iterator_memory(struct region_iterator *);
 void  region_iterator_destroy(struct region_iterator *);
 
-int os_write_memory(os_handle, void *, void *, size_t);
+int os_write_memory(os_handle, uintptr_t, void *, size_t);
 void  os_sleep(double);
 os_handle os_process_open(os_pid);
 void os_process_close(os_handle);
@@ -91,12 +91,12 @@ process_iterator_destroy(struct process_iterator *i)
 }
 
 struct region_iterator {
-    void *p;
-    void *base;
+    uintptr_t base;
     size_t size;
     unsigned long flags;
 
     // private
+    void *p;
     HANDLE process;
     void *buf;
     size_t bufsize;
@@ -112,7 +112,7 @@ region_iterator_next(struct region_iterator *i)
             i->p = (char *)i->p + info->RegionSize;
             if (info->State == MEM_COMMIT) {
                 i->size = info->RegionSize;
-                i->base = info->AllocationBase;
+                i->base = (uintptr_t)info->AllocationBase;
                 switch (info->AllocationProtect) {
                     case PAGE_EXECUTE:
                         i->flags |= REGION_ITERATOR_EXECUTE;
@@ -175,7 +175,8 @@ region_iterator_memory(struct region_iterator *i)
         i->buf = malloc(i->bufsize);
     }
     size_t actual;
-    if (!ReadProcessMemory(i->process, i->base, i->buf, i->size, &actual))
+    void *base = (void *)i->base;
+    if (!ReadProcessMemory(i->process, base, i->buf, i->size, &actual))
         return NULL;
     else if (actual < i->size)
         return NULL;
@@ -190,10 +191,10 @@ region_iterator_destroy(struct region_iterator *i)
 }
 
 static int
-os_write_memory(os_handle target, void *base, void *buf, size_t bufsize)
+os_write_memory(os_handle target, uintptr_t base, void *buf, size_t bufsize)
 {
     size_t actual;
-    return WriteProcessMemory(target, base, buf, bufsize, &actual)
+    return WriteProcessMemory(target, (void *)base, buf, bufsize, &actual)
         && actual == bufsize;
 }
 
@@ -227,6 +228,7 @@ static const char *
 os_last_error(void)
 {
     DWORD e = GetLastError();
+    SetLastError(0);
     DWORD lang = MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT);
     DWORD flags = FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
     FormatMessage(flags, 0, e, lang, error_buffer, sizeof(error_buffer), 0);
@@ -245,7 +247,7 @@ static enum loglevel {
     LOGLEVEL_INFO    = -1,
     LOGLEVEL_WARNING =  0,
     LOGLEVEL_ERROR   =  1,
-} loglevel = LOGLEVEL_WARNING;
+} loglevel = 0;
 
 #define FATAL(...)                                      \
     do {                                                \
@@ -284,7 +286,7 @@ struct watchlist {
     os_handle process;
     size_t count;
     size_t size;
-    char **values;
+    uintptr_t *addr;
 };
 
 static void
@@ -293,24 +295,24 @@ watchlist_init(struct watchlist *s, os_handle process)
     s->process = process;
     s->size = 4096;
     s->count = 0;
-    s->values = malloc(s->size * sizeof(s->values[0]));
+    s->addr = malloc(s->size * sizeof(s->addr[0]));
 }
 
 static void
-watchlist_push(struct watchlist *s, char *v)
+watchlist_push(struct watchlist *s, uintptr_t v)
 {
     if (s->count == s->size) {
         s->size *= 2;
-        s->values = realloc(s->values, s->size * sizeof(s->values[0]));
+        s->addr = realloc(s->addr, s->size * sizeof(s->addr[0]));
     }
-    s->values[s->count++] = v;
+    s->addr[s->count++] = v;
 }
 
 static void
 watchlist_free(struct watchlist *s)
 {
-    free(s->values);
-    s->values = NULL;
+    free(s->addr);
+    s->addr = NULL;
 }
 
 static void
@@ -332,17 +334,17 @@ scan32_full(struct watchlist *wl, uint32_t value)
             size_t count = it->size / sizeof(buf[0]);
             for (size_t i = 0; i < count; i++) {
                 if (buf[i] == value)
-                    watchlist_push(wl, (char *)it->base + i * sizeof(buf[0]));
+                    watchlist_push(wl, it->base + i * sizeof(buf[0]));
             }
         } else {
             LOG_INFO("memory read failed [%p]: %s\n",
-                    it->base, os_last_error());
+                     (void *)it->base, os_last_error());
         }
     }
     region_iterator_destroy(it);
 }
 
-typedef void (*region_visitor)(char *, const void *, void *);
+typedef void (*region_visitor)(uintptr_t, const void *, void *);
 
 static void
 region_visit(struct watchlist *wl, region_visitor f, void *arg)
@@ -352,16 +354,16 @@ region_visit(struct watchlist *wl, region_visitor f, void *arg)
     size_t n = 0;
     for (; !region_iterator_done(it) && n < wl->count; region_iterator_next(it)) {
         char *buf = NULL;
-        char *base = it->base;
-        char *tail = base + it->size;
-        while (n < wl->count && wl->values[n] < base)
+        uintptr_t base = it->base;
+        uintptr_t tail = base + it->size;
+        while (n < wl->count && wl->addr[n] < base)
             n++;
-        while (n < wl->count && wl->values[n] >= base && wl->values[n] < tail) {
+        while (n < wl->count && wl->addr[n] >= base && wl->addr[n] < tail) {
             if (!buf)
                 buf = region_iterator_memory(it);
-            char *addr = wl->values[n];
+            uintptr_t addr = wl->addr[n];
             if (buf) {
-                ptrdiff_t d = wl->values[n] - base;
+                size_t d = wl->addr[n] - base;
                 f(addr, buf + d, arg);
             } else {
                 f(addr, NULL, arg);
@@ -378,15 +380,15 @@ struct visitor_state {
 };
 
 static void
-narrow_visitor(char *addr, const void *memory, void *arg)
+narrow_visitor(uintptr_t addr, const void *memory, void *arg)
 {
     struct visitor_state *s = arg;
-    if (!memory) {
+    if (memory) {
         if (*(uint32_t *)memory == s->value)
             watchlist_push(s->wl, addr);
     } else {
         LOG_INFO("memory read failed [%p]: %s\n",
-                 addr, os_last_error());
+                 (void *)addr, os_last_error());
     }
 }
 
@@ -415,9 +417,9 @@ display_memory_regions(os_handle target)
             it->flags & REGION_ITERATOR_WRITE   ? 'W' : ' ',
             it->flags & REGION_ITERATOR_EXECUTE ? 'X' : ' ',
         };
-        void *tail = (char *)it->base + it->size;
+        uintptr_t tail = it->base + it->size;
         printf("%s %p %p %10zu bytes\n",
-               protect, it->base, tail, it->size);
+               protect, (void *)it->base, (void *)tail, it->size);
     }
     region_iterator_destroy(it);
 }
@@ -540,13 +542,13 @@ memdig_init(struct memdig *m)
 }
 
 static void
-list_visitor(char *addr, const void *mem, void *arg)
+list_visitor(uintptr_t addr, const void *mem, void *arg)
 {
     (void)arg;
     if (mem)
-        printf("%p %" PRIu32 "\n", addr, *(uint32_t *)mem);
+        printf("%p %" PRIu32 "\n", (void *)addr, *(uint32_t *)mem);
     else
-        printf("%p ???\n", addr);
+        printf("%p ???\n", (void *)addr);
 }
 
 enum memdig_result {
@@ -657,7 +659,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             uint32_t value = strtol(argv[1], NULL, 10);
             size_t set_count = 0;
             for (size_t i = 0; i < m->watchlist.count; i++) {
-                char *addr = m->watchlist.values[i];
+                uintptr_t addr = m->watchlist.addr[i];
                 if (!os_write_memory(m->target, addr, &value, sizeof(value)))
                     LOG_WARNING("write memory failed: %s\n",
                                 os_last_error());
