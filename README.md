@@ -56,7 +56,7 @@ abstracted, so support for additional platforms could be easily added.
 * Various alignment and stride options
 * Automatic re-attach
 * Value locking with configurable refresh rate
-* Manual address entry
+* Manual address removal
 * Save/load address lists by name, to file
 * WTF-8 transation across Windows APIs
 * Address list transformations and filters
