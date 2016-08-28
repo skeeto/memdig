@@ -358,12 +358,14 @@ region_visit(struct watchlist *wl, region_visitor f, void *arg)
             n++;
         while (n < wl->count && wl->values[n] >= base && wl->values[n] < tail) {
             if (!buf)
-                if (!(buf = region_iterator_memory(it))) {
-                    LOG_INFO("memory read failed [%p]: %s\n",
-                             it->base, os_last_error());
-                }
-            ptrdiff_t d = wl->values[n] - base;
-            f(wl->values[n], buf + d, arg);
+                buf = region_iterator_memory(it);
+            char *addr = wl->values[n];
+            if (buf) {
+                ptrdiff_t d = wl->values[n] - base;
+                f(addr, buf + d, arg);
+            } else {
+                f(addr, NULL, arg);
+            }
             n++;
         }
     }
@@ -379,8 +381,13 @@ static void
 narrow_visitor(char *addr, const void *memory, void *arg)
 {
     struct visitor_state *s = arg;
-    if (*(uint32_t *)memory == s->value)
-        watchlist_push(s->wl, addr);
+    if (!memory) {
+        if (*(uint32_t *)memory == s->value)
+            watchlist_push(s->wl, addr);
+    } else {
+        LOG_INFO("memory read failed [%p]: %s\n",
+                 addr, os_last_error());
+    }
 }
 
 static void
@@ -536,7 +543,10 @@ static void
 list_visitor(char *addr, const void *mem, void *arg)
 {
     (void)arg;
-    printf("%p %" PRIu32 "\n", addr, *(uint32_t *)mem);
+    if (mem)
+        printf("%p %" PRIu32 "\n", addr, *(uint32_t *)mem);
+    else
+        printf("%p ???\n", addr);
 }
 
 enum memdig_result {
