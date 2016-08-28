@@ -1,16 +1,20 @@
-# Memdig: a memory cheat tool
+# MemDig: a memory cheat tool
 
-Memdig allows the user to manipulate the memory of another process,
+MemDig allows the user to manipulate the memory of another process,
 primary for the purposes of cheating. There have been many tools like
 this before, but this one is a scriptable command line program.
 
 There are a number of commands available from the program's command
-prompt. The "help" command provides a list with documentation. Memdig
+prompt. The "help" command provides a list with documentation. MemDig
 commands can also be supplied as command line arguments to the program
 itself, by prefixing them with one or two dashes.
 
 All commands can be shortened so long as they remain unambiguous,
 similar to gdb. For example, "attach" can be written as "a" or "att".
+
+The current set of commands is quite meager, and edits are limited to
+32-bit integers, but the command set will grow as more power is
+needed.
 
 ## Example Usage
 
@@ -40,8 +44,8 @@ The `-w 10` (i.e. `--wait 10`) will put a 10 second delay before the
 state. The `-q` (i.e. `--quit`) will exit the program before it beings
 the interactive prompt.
 
-## Support Platforms
+## Supported Platforms
 
 Since it's the largest platform for gaming, only Windows is currently
-supported. However, the API to the platform is fully abstracted, so
-support for additional platforms could easily be added.
+supported. However, the platform API is fully abstracted, so support
+for additional platforms could easily be added.
