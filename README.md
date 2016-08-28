@@ -49,3 +49,18 @@ the interactive prompt.
 Since it's the largest platform for gaming, only Windows is currently
 supported. However, the platform API is fully abstracted, so support
 for additional platforms could easily be added.
+
+## Future Plans
+
+* Remote, network interface
+* More values types (integer widths, floats, strings, SIMD)
+* Various alignment and stride options
+* Automatic re-attach
+* Value locking with configurable refresh rate
+* Manual address entry
+* Save/load address lists by name, to file
+* WTF-8 transation across Windows APIs
+* Address list transformations and filters
+* Hexadecimal arguments
+* Progress indicator (find)
+* (long shot) Export/create trainer EXE for a specific target
