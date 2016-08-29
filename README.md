@@ -64,4 +64,5 @@ abstracted, so support for additional platforms could be easily added.
 * Address list transformations and filters
 * Hexadecimal arguments
 * Progress indicator (find)
+* Symbol and region oriented commands (locate known addresses after ASLR)
 * (long shot) Export/create trainer EXE for a specific target
