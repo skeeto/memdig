@@ -54,6 +54,7 @@ abstracted, so support for additional platforms could be easily added.
 * Remote, network interface
 * More values types (integer widths, floats, strings, SIMD)
 * Range or expression searches, especially in regards to floats
+* Readline support (especially on Linux)
 * Various alignment and stride options
 * Automatic re-attach
 * Value locking with configurable refresh rate
