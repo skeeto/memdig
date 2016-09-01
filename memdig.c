@@ -721,6 +721,53 @@ scan_value_parse(struct scan_value *v, const char *arg)
     return 0;
 }
 
+static void
+scan_value_pointer(struct scan_value *v, void *buf, unsigned *size)
+{
+    switch (v->type) {
+        case SCAN_VALUE_S8:
+            *size = 1;
+            *(int8_t *)buf = (int8_t)v->value.s;
+            break;
+        case SCAN_VALUE_U8:
+            *size = 1;
+            *(uint8_t *)buf = (uint8_t)v->value.u;
+            break;
+        case SCAN_VALUE_S16:
+            *size = 2;
+            *(int16_t *)buf = (int16_t)v->value.s;
+            break;
+        case SCAN_VALUE_U16:
+            *size = 2;
+            *(uint16_t *)buf = (uint16_t)v->value.u;
+            break;
+        case SCAN_VALUE_S32:
+            *size = 4;
+            *(int32_t *)buf = (int32_t)v->value.s;
+            break;
+        case SCAN_VALUE_U32:
+            *size = 4;
+            *(uint32_t *)buf = (uint32_t)v->value.u;
+            break;
+        case SCAN_VALUE_S64:
+            *size = 8;
+            *(int64_t *)buf = v->value.s;
+            break;
+        case SCAN_VALUE_U64:
+            *size = 8;
+            *(uint64_t *)buf = v->value.u;
+            break;
+        case SCAN_VALUE_F32:
+            *size = 4;
+            *(float *)buf = (float)v->value.f;
+            break;
+        case SCAN_VALUE_F64:
+            *size = 8;
+            *(double *)buf = v->value.f;
+            break;
+    }
+}
+
 static int
 scan(struct watchlist *wl, char op, struct scan_value *v)
 {
@@ -1165,11 +1212,17 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 LOG_ERROR("no process attached\n");
             if (argc != 2)
                 LOG_ERROR("wrong number of arguments");
-            uint32_t value = strtol(argv[1], NULL, 10);
+            const char *value = argv[1];
+            struct scan_value scan_value;
+            if (!scan_value_parse(&scan_value, value))
+                LOG_ERROR("invalid value '%s'\n", value);
             size_t set_count = 0;
             for (size_t i = 0; i < m->watchlist.count; i++) {
                 uintptr_t addr = m->watchlist.addr[i];
-                if (!os_write_memory(m->target, addr, &value, sizeof(value)))
+                unsigned size = 0;
+                char buf[8];
+                scan_value_pointer(&scan_value, buf, &size);
+                if (!os_write_memory(m->target, addr, buf, size))
                     LOG_WARNING("write memory failed: %s\n",
                                 os_last_error());
                 else
@@ -1196,7 +1249,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                  "where each\ncommand verb is prefixed with one or two "
                  "dashes.\n");
             puts("By default, memory is scanned for 32-bit signed integers. "
-                 "The numeric\narguments to 'find' and 'narrow' may have "
+                 "The numeric\narguments to find, narrow, and set may have "
                  "C-like suffixes specifying\ntheir width and signedness "
                  "(b, h, q, ub, uh, uq). Floating point\nvalues are also "
                  "an option, with an 'f' suffix for single precision.");
