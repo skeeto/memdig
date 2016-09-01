@@ -12,15 +12,15 @@ itself, by prefixing them with one or two dashes.
 All commands can be shortened so long as they remain unambiguous,
 similar to gdb. For example, "attach" can be written as "a" or "att".
 
-The current set of commands is quite meager, and edits are limited to
-32-bit integers, but the command set will grow as more power is
-needed.
+The current set of commands is quite meager, though it can operate on
+integers and floats of any size. The command set will grow as more
+power is needed.
 
 ## Example Usage
 
 Here's how you might change the amount of gold in a game called
 Generic RPG. Suppose the process name is `grpg.exe` and you currently
-have 273 gold.
+have 273 gold, stored as a 32-bit integer.
 
     memdig.exe --attach grpg.exe
     > find 273
@@ -43,6 +43,20 @@ The `-w 10` (i.e. `--wait 10`) will put a 10 second delay before the
 "narrow" command, giving you a chance to make changes to the game
 state. The `-q` (i.e. `--quit`) will exit the program before it beings
 the interactive prompt.
+
+## Supported Types
+
+Suffixes can be used to set the type when searching memory. There are
+three integer width specifiers: byte (b), short (h), and quad (q), and
+each integer type is optionally unsigned (ub, uh, u, uq). For floating
+point, include a decimal or exponent in the normal format. An f suffix
+indicates single precision.
+
+* -45b (signed 8-bit)
+* 40000uh (unsigned 16-bit)
+* 0xffffq (unsigned 64-bit)
+* 10.0 (double)
+* 1e1f (float)
 
 ## Supported Platforms
 

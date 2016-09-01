@@ -999,11 +999,11 @@ static struct {
     },
     [COMMAND_FIND]   = {
         "find", "find and remember integral memory values",
-        "<current value>"
+        "[<|>|=] <value>"
     },
     [COMMAND_NARROW] = {
         "narrow", "filter the current list of addresses",
-        "<current value>"
+        "[<|>|=] <value>"
     },
     [COMMAND_PUSH] = {
         "push", "manually add address to list",
