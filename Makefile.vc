@@ -1,6 +1,6 @@
 CFLAGS = -nologo -W4 -O1 -D_CRT_SECURE_NO_WARNINGS -wd4204 -wd4706 -wd4221
 
-memdig.exe : memdig.c
+memdig.exe : memdig.c scan.c
 
 clean :
 	del *.exe *.obj

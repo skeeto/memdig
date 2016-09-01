@@ -562,25 +562,192 @@ watchlist_clear(struct watchlist *s)
 
 /* Memory scanning */
 
-static void
-scan32_full(struct watchlist *wl, uint32_t value)
+#define xstr(s) str(s)
+#define str(s) #s
+
+#define SCAN_NAME scan_u8
+#define NARROW_NAME narrow_u8
+#define SCAN_TYPE uint8_t
+#include "scan.c"
+#undef SCAN_NAME
+#undef NARROW_NAME
+#undef SCAN_TYPE
+
+#define SCAN_NAME scan_s8
+#define NARROW_NAME narrow_s8
+#define SCAN_TYPE int8_t
+#include "scan.c"
+#undef SCAN_NAME
+#undef NARROW_NAME
+#undef SCAN_TYPE
+
+#define SCAN_NAME scan_u16
+#define NARROW_NAME narrow_u16
+#define SCAN_TYPE uint16_t
+#include "scan.c"
+#undef SCAN_NAME
+#undef NARROW_NAME
+#undef SCAN_TYPE
+
+#define SCAN_NAME scan_s16
+#define NARROW_NAME narrow_s16
+#define SCAN_TYPE int16_t
+#include "scan.c"
+#undef SCAN_NAME
+#undef NARROW_NAME
+#undef SCAN_TYPE
+
+#define SCAN_NAME scan_u32
+#define NARROW_NAME narrow_u32
+#define SCAN_TYPE uint32_t
+#include "scan.c"
+#undef SCAN_NAME
+#undef NARROW_NAME
+#undef SCAN_TYPE
+
+#define SCAN_NAME scan_s32
+#define NARROW_NAME narrow_s32
+#define SCAN_TYPE int32_t
+#include "scan.c"
+#undef SCAN_NAME
+#undef NARROW_NAME
+#undef SCAN_TYPE
+
+#define SCAN_NAME scan_u64
+#define NARROW_NAME narrow_u64
+#define SCAN_TYPE uint64_t
+#include "scan.c"
+#undef SCAN_NAME
+#undef NARROW_NAME
+#undef SCAN_TYPE
+
+#define SCAN_NAME scan_s64
+#define NARROW_NAME narrow_s64
+#define SCAN_TYPE int64_t
+#include "scan.c"
+#undef SCAN_NAME
+#undef NARROW_NAME
+#undef SCAN_TYPE
+
+#define SCAN_NAME scan_f32
+#define NARROW_NAME narrow_f32
+#define SCAN_TYPE float
+#include "scan.c"
+#undef SCAN_NAME
+#undef NARROW_NAME
+#undef SCAN_TYPE
+
+#define SCAN_NAME scan_f64
+#define NARROW_NAME narrow_f64
+#define SCAN_TYPE double
+#include "scan.c"
+#undef SCAN_NAME
+#undef NARROW_NAME
+#undef SCAN_TYPE
+
+struct scan_value {
+    enum scan_value_type {
+        SCAN_VALUE_S8,
+        SCAN_VALUE_U8,
+        SCAN_VALUE_S16,
+        SCAN_VALUE_U16,
+        SCAN_VALUE_S32,
+        SCAN_VALUE_U32,
+        SCAN_VALUE_S64,
+        SCAN_VALUE_U64,
+        SCAN_VALUE_F32,
+        SCAN_VALUE_F64,
+    } type;
+    union {
+        int64_t s;
+        uint64_t u;
+        double f;
+    } value;
+};
+
+static int
+scan_value_parse(struct scan_value *v, const char *arg)
 {
-    struct region_iterator it[1];
-    region_iterator_init(it, wl->process);
-    for (; !region_iterator_done(it); region_iterator_next(it)) {
-        uint32_t *buf;
-        if ((buf = region_iterator_memory(it))) {
-            size_t count = it->size / sizeof(buf[0]);
-            for (size_t i = 0; i < count; i++) {
-                if (buf[i] == value)
-                    watchlist_push(wl, it->base + i * sizeof(buf[0]));
-            }
-        } else {
-            LOG_INFO("memory read failed [0x%016" PRIxPTR "]: %s\n",
-                     it->base, os_last_error());
-        }
+    v->type = SCAN_VALUE_S64;
+    int is_hex = 0;
+    char *end;
+    if (strncmp(arg, "0x", 2) == 0) {
+        is_hex = 1;
+        v->type = SCAN_VALUE_U64;
+        errno = 0;
+        v->value.u = strtoull(arg + 2, &end, 16);
+    } else {
+        errno = 0;
+        v->value.s = strtoll(arg, &end, 10);
     }
-    region_iterator_destroy(it);
+    if (!is_hex && *end == 'u') {
+        if (arg[0] == '-')
+            return 0;
+        // try again as unsigned
+        v->type = SCAN_VALUE_U64;
+        errno = 0;
+        v->value.u = strtoull(arg, &end, 10);
+        end++;
+    } else if (!is_hex && *end == '.') {
+        errno = 0;
+        v->value.f = strtod(arg, &end);
+        if (errno)
+            return 0;
+        if (strcmp(end, "f") == 0)
+            v->type = SCAN_VALUE_F32;
+        else if (strcmp(end, "") == 0)
+            v->type = SCAN_VALUE_F64;
+        else
+            return 0;
+        return 1;
+    } else if (errno) {
+        return 0;
+    }
+    if (end[0] && end[1])
+        return 0; // too much suffix
+    switch (*end) {
+        case 'b':
+            v->type -= 6;
+            return 1;
+        case 'h':
+            v->type -= 4;
+            return 1;
+        case 0:
+            v->type -= 2;
+            return 1;
+        case 'q':
+            return 1;
+    }
+    return 0;
+}
+
+static int
+scan(struct watchlist *wl, char op, struct scan_value *v)
+{
+    watchlist_clear(wl);
+    switch (v->type) {
+        case SCAN_VALUE_S8:
+            return scan_s8(wl, op, (int8_t)v->value.s);
+        case SCAN_VALUE_U8:
+            return scan_u8(wl, op, (uint8_t)v->value.u);
+        case SCAN_VALUE_S16:
+            return scan_s16(wl, op, (int16_t)v->value.s);
+        case SCAN_VALUE_U16:
+            return scan_u16(wl, op, (uint16_t)v->value.u);
+        case SCAN_VALUE_S32:
+            return scan_s32(wl, op, (int32_t)v->value.s);
+        case SCAN_VALUE_U32:
+            return scan_u32(wl, op, (uint32_t)v->value.u);
+        case SCAN_VALUE_S64:
+            return scan_s64(wl, op, v->value.s);
+        case SCAN_VALUE_U64:
+            return scan_u64(wl, op, v->value.u);
+        case SCAN_VALUE_F32:
+            return scan_f32(wl, op, (float)v->value.f);
+        case SCAN_VALUE_F64:
+            return scan_f64(wl, op, v->value.f);
+    }
+    return 0;
 }
 
 typedef void (*region_visitor)(uintptr_t, const void *, void *);
@@ -613,36 +780,96 @@ region_visit(struct watchlist *wl, region_visitor f, void *arg)
     region_iterator_destroy(it);
 }
 
-struct visitor_state {
-    struct watchlist *wl;
-    uint32_t value;
-};
-
-static void
-narrow_visitor(uintptr_t addr, const void *memory, void *arg)
-{
-    struct visitor_state *s = arg;
-    if (memory) {
-        if (*(uint32_t *)memory == s->value)
-            watchlist_push(s->wl, addr);
-    } else {
-        LOG_INFO("memory read failed [0x%016" PRIxPTR "]: %s\n",
-                 addr, os_last_error());
-    }
-}
-
-static void
-scan32_narrow(struct watchlist *wl, uint32_t value)
+static int
+narrow(struct watchlist *wl, char op, struct scan_value *v)
 {
     struct watchlist out[1];
     watchlist_init(out, wl->process);
-    struct visitor_state state = {
-        .wl = out,
-        .value = value
-    };
-    region_visit(wl, narrow_visitor, &state);
+    switch (v->type) {
+        case SCAN_VALUE_S8: {
+            struct narrow_s8 state = {
+                .watchlist = out,
+                .op = op,
+                .value = (int8_t)v->value.s,
+            };
+            region_visit(wl, narrow_s8, &state);
+        } break;
+        case SCAN_VALUE_U8: {
+            struct narrow_u8 state = {
+                .watchlist = out,
+                .op = op,
+                .value = (uint8_t)v->value.u,
+            };
+            region_visit(wl, narrow_u8, &state);
+        } break;
+        case SCAN_VALUE_S16: {
+            struct narrow_s16 state = {
+                .watchlist = out,
+                .op = op,
+                .value = (int16_t)v->value.s,
+            };
+            region_visit(wl, narrow_s16, &state);
+        } break;
+        case SCAN_VALUE_U16: {
+            struct narrow_u16 state = {
+                .watchlist = out,
+                .op = op,
+                .value = (uint16_t)v->value.u,
+            };
+            region_visit(wl, narrow_u16, &state);
+        } break;
+        case SCAN_VALUE_S32: {
+            struct narrow_s32 state = {
+                .watchlist = out,
+                .op = op,
+                .value = (int32_t)v->value.s,
+            };
+            region_visit(wl, narrow_s32, &state);
+        } break;
+        case SCAN_VALUE_U32: {
+            struct narrow_u32 state = {
+                .watchlist = out,
+                .op = op,
+                .value = (uint32_t)v->value.u,
+            };
+            region_visit(wl, narrow_u32, &state);
+        } break;
+        case SCAN_VALUE_S64: {
+            struct narrow_s64 state = {
+                .watchlist = out,
+                .op = op,
+                .value = v->value.s,
+            };
+            region_visit(wl, narrow_s64, &state);
+        } break;
+        case SCAN_VALUE_U64: {
+            struct narrow_u64 state = {
+                .watchlist = out,
+                .op = op,
+                .value = v->value.u,
+            };
+            region_visit(wl, narrow_u64, &state);
+        } break;
+        case SCAN_VALUE_F32: {
+            struct narrow_f32 state = {
+                .watchlist = out,
+                .op = op,
+                .value = (float)v->value.f,
+            };
+            region_visit(wl, narrow_f32, &state);
+        } break;
+        case SCAN_VALUE_F64: {
+            struct narrow_f64 state = {
+                .watchlist = out,
+                .op = op,
+                .value = v->value.f,
+            };
+            region_visit(wl, narrow_f64, &state);
+        } break;
+    }
     watchlist_free(wl);
     *wl = *out;
+    return 1;
 }
 
 static void
@@ -822,7 +1049,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 else
                     printf("not attached to a process\n");
             } else if (argc != 2)
-                LOG_ERROR("wrong number of arguments");
+                LOG_ERROR("wrong number of arguments\n");
             if (m->target) {
                 watchlist_free(&m->watchlist);
                 os_process_close(m->target);
@@ -857,21 +1084,48 @@ memdig_exec(struct memdig *m, int argc, char **argv)
         case COMMAND_FIND: {
             if (!m->target)
                 LOG_ERROR("no process attached\n");
-            if (argc != 2)
-                LOG_ERROR("wrong number of arguments");
-            long value = strtol(argv[1], NULL, 10);
-            watchlist_clear(&m->watchlist);
-            scan32_full(&m->watchlist, value);
-            printf("%zu values found\n", m->watchlist.count);
+            if (argc < 2 || argc > 3)
+                LOG_ERROR("wrong number of arguments\n");
+            char op = '=';
+            const char *value = argv[1];
+            if (argc == 3) {
+                op = argv[1][0];
+                if (strlen(argv[1]) != 1 || !strchr("<=>", op))
+                    LOG_ERROR("invalid operator '%s'\n", argv[1]);
+                value = argv[2];
+            } else {
+                value = argv[1];
+            }
+            struct scan_value scan_value;
+            if (!scan_value_parse(&scan_value, value))
+                LOG_ERROR("invalid value '%s'\n", value);
+            if (!scan(&m->watchlist, op, &scan_value))
+                LOG_ERROR("scan failure'\n");
+            else
+                printf("%zu values found\n", m->watchlist.count);
         } break;
         case COMMAND_NARROW: {
             if (!m->target)
                 LOG_ERROR("no process attached\n");
-            if (argc != 2)
-                LOG_ERROR("wrong number of arguments");
-            long value = strtol(argv[1], NULL, 10);
-            scan32_narrow(&m->watchlist, value);
-            printf("%zu values remaining\n", m->watchlist.count);
+            if (argc < 2 || argc > 3)
+                LOG_ERROR("wrong number of arguments\n");
+            char op = '=';
+            const char *value = argv[1];
+            if (argc == 3) {
+                op = argv[1][0];
+                if (strlen(argv[1]) != 1 || !strchr("<=>", op))
+                    LOG_ERROR("invalid operator '%s'\n", argv[1]);
+                value = argv[2];
+            } else {
+                value = argv[1];
+            }
+            struct scan_value scan_value;
+            if (!scan_value_parse(&scan_value, value))
+                LOG_ERROR("invalid value '%s'\n", value);
+            if (!narrow(&m->watchlist, op, &scan_value))
+                LOG_ERROR("scan failure'\n");
+            else
+                printf("%zu values found\n", m->watchlist.count);
         } break;
         case COMMAND_PUSH: {
             if (!m->target)
@@ -940,8 +1194,12 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             putchar('\n');
             puts("Commands can also be supplied as command line arguments, "
                  "where each\ncommand verb is prefixed with one or two "
-                 "dashes.");
-
+                 "dashes.\n");
+            puts("By default, memory is scanned for 32-bit signed integers. "
+                 "The numeric\narguments to 'find' and 'narrow' may have "
+                 "C-like suffixes specifying\ntheir width and signedness "
+                 "(b, h, q, ub, uh, uq). Floating point\nvalues are also "
+                 "an option, with an 'f' suffix for single precision.");
         } break;
         case COMMAND_QUIT: {
             return MEMDIG_RESULT_QUIT;
