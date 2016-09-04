@@ -1081,6 +1081,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                     printf("attached to %ld\n", (long)m->id);
                 else
                     printf("not attached to a process\n");
+                return MEMDIG_RESULT_OK;
             } else if (argc != 2)
                 LOG_ERROR("wrong number of arguments\n");
             if (m->target) {
