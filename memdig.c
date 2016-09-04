@@ -164,7 +164,7 @@ region_iterator_memory(struct region_iterator *i)
         i->bufsize = i->size;
         i->buf = malloc(i->bufsize);
     }
-    size_t actual;
+    SIZE_T actual;
     void *base = (void *)i->base;
     if (!ReadProcessMemory(i->process, base, i->buf, i->size, &actual))
         return NULL;
@@ -183,7 +183,7 @@ region_iterator_destroy(struct region_iterator *i)
 static int
 os_write_memory(os_handle target, uintptr_t base, void *buf, size_t bufsize)
 {
-    size_t actual;
+    SIZE_T actual;
     return WriteProcessMemory(target, (void *)base, buf, bufsize, &actual)
         && actual == bufsize;
 }
@@ -1182,7 +1182,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             char *addrs = argv[1];
             if (strncmp(addrs, "0x", 2) != 0)
                 LOG_ERROR("unknown address format '%s'\n", addrs);
-            uintptr_t addr = strtoull(addrs + 2, NULL, 16);
+            uintptr_t addr = (uintptr_t)strtoull(addrs + 2, NULL, 16);
             watchlist_push(&m->watchlist, addr);
         } break;
         case COMMAND_LIST: {
