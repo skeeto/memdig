@@ -2,7 +2,11 @@
 #include <stdlib.h>
 #include <inttypes.h>
 
-#define PROMPT "> "
+#define PROMPT(f)                               \
+    do {                                        \
+        fputs("> ", f);                         \
+        fflush(f);                              \
+    } while(0)
 
 /* Platform API */
 
@@ -1284,7 +1288,7 @@ main(int argc, char **argv)
     }
 
     char line[4096];
-    fputs(PROMPT, stdout);
+    PROMPT(stdout);
     const char *delim = " \n\t";
     while (fgets(line, sizeof(line), stdin)) {
         xargc = 0;
@@ -1297,7 +1301,7 @@ main(int argc, char **argv)
         }
         if (memdig_exec(memdig, xargc, xargv) == MEMDIG_RESULT_QUIT)
             goto quit;
-        fputs(PROMPT, stdout);
+        PROMPT(stdout);
     }
 
 quit:
