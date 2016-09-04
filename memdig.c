@@ -234,12 +234,8 @@ os_last_error(void)
 #include <errno.h>
 #include <string.h>
 
-#include <fcntl.h>
 #include <dirent.h>
-#include <unistd.h>
-#include <sys/wait.h>
-#include <sys/types.h>
-#include <sys/ptrace.h>
+#include <sys/uio.h>
 
 typedef pid_t os_handle;
 typedef pid_t os_pid;
@@ -334,7 +330,6 @@ struct region_iterator {
     //private
     pid_t pid;
     FILE *maps;
-    int mem;
     char *buf;
     size_t bufsize;
 };
@@ -374,16 +369,9 @@ region_iterator_init(struct region_iterator *i, os_handle pid)
     FILE *maps = fopen(file, "r");
     if (!maps)
         return 0;
-    sprintf(file, "/proc/%ld/mem", (long)pid);
-    int mem = open(file, O_RDONLY);
-    if (mem == -1) {
-        fclose(maps);
-        return 0;
-    }
     *i = (struct region_iterator){
         .pid = pid,
         .maps = maps,
-        .mem = mem,
     };
     return region_iterator_next(i);
 }
@@ -396,18 +384,21 @@ region_iterator_memory(struct region_iterator *i)
         i->bufsize = i->size;
         i->buf = malloc(i->bufsize);
     }
-    if (ptrace(PTRACE_ATTACH, i->pid, 0, 0) == -1)
-        return NULL;
-    waitpid(i->pid, NULL, 0);
-    int result = pread(i->mem, i->buf, i->size, i->base) == (ssize_t)i->size;
-    ptrace(PTRACE_DETACH, i->pid, 0, 0);
-    return result ? i->buf : NULL;
+    struct iovec local = {
+        .iov_base = i->buf,
+        .iov_len  = i->size,
+    };
+    struct iovec remote = {
+        .iov_base = (void *)i->base,
+        .iov_len  = i->size,
+    };
+    ssize_t in = process_vm_readv(i->pid, &local, 1, &remote, 1, 0);
+    return (in >= 0 && (size_t)in == i->size) ? i->buf : NULL;
 }
 
 static void
 region_iterator_destroy(struct region_iterator *i)
 {
-    close(i->mem);
     fclose(i->maps);
     free(i->buf);
     i->buf = NULL;
@@ -416,20 +407,16 @@ region_iterator_destroy(struct region_iterator *i)
 static int
 os_write_memory(os_handle pid, uintptr_t addr, void *buf, size_t bufsize)
 {
-    char file[256];
-    sprintf(file, "/proc/%ld/mem", (long)pid);
-    int fd = open(file, O_WRONLY);
-    if (fd == -1)
-        return 0;
-    if (ptrace(PTRACE_ATTACH, pid, 0, 0) == -1) {
-        close(fd);
-        return 0;
-    }
-    waitpid(pid, NULL, 0);
-    int result = pwrite(fd, buf, bufsize, addr) == (ssize_t)bufsize;
-    ptrace(PTRACE_DETACH, pid, 0, 0);
-    close(fd);
-    return result;
+    struct iovec local = {
+        .iov_base = buf,
+        .iov_len  = bufsize,
+    };
+    struct iovec remote = {
+        .iov_base = (void *)addr,
+        .iov_len  = bufsize,
+    };
+    ssize_t out = process_vm_writev(pid, &local, 1, &remote, 1, 0);
+    return out >= 0 && (size_t)out == bufsize;
 }
 
 static void
@@ -445,12 +432,7 @@ os_sleep(double s)
 static os_handle
 os_process_open(os_pid pid)
 {
-    /* Make sure we can attach. */
-    if (ptrace(PTRACE_ATTACH, pid, 0, 0) == -1)
-        return 0;
-    waitpid(pid, NULL, 0);
-    ptrace(PTRACE_DETACH, pid, 0, 0);
-    return pid;
+    return pid; // TODO: verify capability
 }
 
 static void
