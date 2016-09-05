@@ -1127,8 +1127,6 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 if (strlen(argv[1]) != 1 || !strchr("<=>", op))
                     LOG_ERROR("invalid operator '%s'\n", argv[1]);
                 value = argv[2];
-            } else {
-                value = argv[1];
             }
             struct scan_value scan_value;
             if (!scan_value_parse(&scan_value, value))
@@ -1150,8 +1148,6 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 if (strlen(argv[1]) != 1 || !strchr("<=>", op))
                     LOG_ERROR("invalid operator '%s'\n", argv[1]);
                 value = argv[2];
-            } else {
-                value = argv[1];
             }
             struct scan_value scan_value;
             if (!scan_value_parse(&scan_value, value))
