@@ -31,16 +31,22 @@ int   region_iterator_done(struct region_iterator *);
 void *region_iterator_memory(struct region_iterator *);
 void  region_iterator_destroy(struct region_iterator *);
 
-int os_write_memory(os_handle, uintptr_t, void *, size_t);
-void  os_sleep(double);
-os_handle os_process_open(os_pid);
-void os_process_close(os_handle);
+int         os_write_memory(os_handle, uintptr_t, void *, size_t);
+void        os_sleep(double);
+os_handle   os_process_open(os_pid);
+void        os_process_close(os_handle);
 const char *os_last_error(void);
 #endif
+
+/* MemDig API for platform */
+
+struct memdig;
+static void memdig_locker(struct memdig *);
 
 /* Platform implementation */
 
 #ifdef _WIN32
+#include <process.h>
 #include <windows.h>
 #include <tlhelp32.h>
 
@@ -160,7 +166,7 @@ region_iterator_init(struct region_iterator *i, os_handle process)
     return region_iterator_next(i);
 }
 
-static void *
+static const void *
 region_iterator_memory(struct region_iterator *i)
 {
     if (i->bufsize < i->size) {
@@ -380,7 +386,7 @@ region_iterator_init(struct region_iterator *i, os_handle pid)
     return region_iterator_next(i);
 }
 
-static void *
+static const void *
 region_iterator_memory(struct region_iterator *i)
 {
     if (i->bufsize < i->size) {
@@ -505,13 +511,368 @@ static enum loglevel {
             fprintf(stderr, "debug: " __VA_ARGS__);     \
     } while (0)
 
+/* MemDig's operatable types */
+
+enum value_type {
+    VALUE_S8,
+    VALUE_U8,
+    VALUE_S16,
+    VALUE_U16,
+    VALUE_S32,
+    VALUE_U32,
+    VALUE_S64,
+    VALUE_U64,
+    VALUE_F32,
+    VALUE_F64,
+};
+
+struct value {
+    enum value_type type;
+    union {
+        int8_t s8;
+        uint8_t u8;
+        int16_t s16;
+        uint16_t u16;
+        int32_t s32;
+        uint32_t u32;
+        int64_t s64;
+        uint64_t u64;
+        float f32;
+        double f64;
+    } value;
+};
+
+#define VALUE_SIZE(v) ("bbcceeiiei"[(v).type] - 'a')
+
+enum value_parse_result {
+    VALUE_PARSE_SUCCESS,
+    VALUE_PARSE_OVERFLOW,
+    VALUE_PARSE_INVALID,
+};
+
+static enum value_parse_result
+value_parse(struct value *v, const char *arg)
+{
+    int base = 10;
+    int is_signed = 1;
+    int is_integer = 1;
+    size_t len = strlen(arg);
+    const char *suffix = arg + len;
+    char digits[] = "0123456789abcdef";
+
+    /* Check prefix to determine base and sign. */
+    if (arg[0] == '0' && arg[1] == 'x') {
+        is_signed = 0;
+        base = 16;
+        arg += 2;
+        len -= 2;
+    } else if (arg[0] == '0') {
+        is_signed = 0;
+        base = 8;
+        arg += 1;
+        len -= 1;
+    }
+    digits[base] = 0;
+
+    /* Find the suffix. */
+    while (suffix > arg && !strchr(digits, suffix[-1]))
+        suffix--;
+
+    /* Check for an integer. */
+    for (const char *p = arg; p < suffix; p++) {
+        if (p == arg && *p == '-')
+            p++;
+        if (!strchr(digits, *p))
+            is_integer = 0;
+    }
+    if (is_integer && suffix[0] == 'u') {
+        is_signed = 0;
+        suffix++;
+    }
+    printf("%s %s %d\n", arg, suffix, is_integer);
+
+    /* Parse the in-between. */
+    if (is_integer) {
+        errno = 0;
+        if (is_signed) {
+            intmax_t s = strtoimax(arg, 0, base);
+            if (errno)
+                return VALUE_PARSE_OVERFLOW;
+            switch (suffix[0]) {
+                case 'o':
+                    v->type = VALUE_S8;
+                    if (s > INT8_MAX || s < INT8_MIN)
+                        return VALUE_PARSE_OVERFLOW;
+                    v->value.s8 = (int8_t)s;
+                    return VALUE_PARSE_SUCCESS;
+                case 'h':
+                    v->type = VALUE_S16;
+                    if (s > INT16_MAX || s < INT16_MIN)
+                        return VALUE_PARSE_OVERFLOW;
+                    v->value.s16 = (int16_t)s;
+                    return VALUE_PARSE_SUCCESS;
+                case 0:
+                    v->type = VALUE_S32;
+                    if (s > INT32_MAX || s < INT32_MIN)
+                        return VALUE_PARSE_OVERFLOW;
+                    v->value.s32 = (int32_t)s;
+                    return VALUE_PARSE_SUCCESS;
+                case 'q':
+                    v->type = VALUE_S64;
+                    if (s > INT64_MAX || s < INT64_MIN)
+                        return VALUE_PARSE_OVERFLOW;
+                    v->value.s64 = (int64_t)s;
+                    return VALUE_PARSE_SUCCESS;
+            }
+        } else {
+            uintmax_t u = strtoumax(arg, 0, base);
+            if (errno)
+                return VALUE_PARSE_OVERFLOW;
+            switch (suffix[0]) {
+                case 'o':
+                    v->type = VALUE_U8;
+                    if (u > UINT8_MAX)
+                        return VALUE_PARSE_OVERFLOW;
+                    v->value.u8 = (uint8_t)u;
+                    return VALUE_PARSE_SUCCESS;
+                case 'h':
+                    v->type = VALUE_U16;
+                    if (u > UINT16_MAX)
+                        return VALUE_PARSE_OVERFLOW;
+                    v->value.u16 = (uint16_t)u;
+                    return VALUE_PARSE_SUCCESS;
+                case 0:
+                    v->type = VALUE_U32;
+                    if (u > UINT32_MAX)
+                        return VALUE_PARSE_OVERFLOW;
+                    v->value.u32 = (uint32_t)u;
+                    return VALUE_PARSE_SUCCESS;
+                case 'q':
+                    v->type = VALUE_U64;
+                    if (u > UINT64_MAX)
+                        return VALUE_PARSE_OVERFLOW;
+                    v->value.u64 = (uint64_t)u;
+                    return VALUE_PARSE_SUCCESS;
+            }
+        }
+    } else { /* float */
+        errno = 0;
+        char *end;
+        switch (suffix[0]) {
+            case 'f':
+                v->type = VALUE_F32;
+                v->value.f32 = strtof(arg, &end);
+                if (end == suffix)
+                    return VALUE_PARSE_SUCCESS;
+                break;
+            case 0:
+                v->type = VALUE_F64;
+                v->value.f64 = strtod(arg, &end);
+                if (end == suffix)
+                    return VALUE_PARSE_SUCCESS;
+                break;
+        }
+    }
+    return VALUE_PARSE_INVALID;
+}
+
+static void
+value_print(char *buf, size_t n, const struct value *v)
+{
+    switch (v->type) {
+        case VALUE_S8: {
+            snprintf(buf, n, "%" PRId8 "o", v->value.s8);
+        } return;
+        case VALUE_U8: {
+            snprintf(buf, n, "%" PRIu8 "uo", v->value.u8);
+        } return;
+        case VALUE_S16: {
+            snprintf(buf, n, "%" PRId16 "h", v->value.s16);
+        } return;
+        case VALUE_U16: {
+            snprintf(buf, n, "%" PRIu16 "uh", v->value.u16);
+        } return;
+        case VALUE_S32: {
+            snprintf(buf, n, "%" PRId32 "", v->value.s32);
+        } return;
+        case VALUE_U32: {
+            snprintf(buf, n, "%" PRIu32 "u", v->value.u32);
+        } return;
+        case VALUE_S64: {
+            snprintf(buf, n, "%" PRId64 "q", v->value.s64);
+        } return;
+        case VALUE_U64: {
+            snprintf(buf, n, "%" PRIu64 "uq", v->value.u64);
+        } return;
+        case VALUE_F32: {
+            snprintf(buf, n, "%.9gf", v->value.f32);
+        } return;
+        case VALUE_F64: {
+            snprintf(buf, n, "%.17g", v->value.f64);
+        } return;
+    }
+    abort();
+}
+
+static void
+value_read(struct value *v, enum value_type t, const void *p)
+{
+    v->type = t;
+    switch (v->type) {
+        case VALUE_S8: {
+            memcpy(&v->value.s8, p, sizeof(v->value.s8));
+        } return;
+        case VALUE_U8: {
+            memcpy(&v->value.u8, p, sizeof(v->value.u8));
+        } return;
+        case VALUE_S16: {
+            memcpy(&v->value.s16, p, sizeof(v->value.s16));
+        } return;
+        case VALUE_U16: {
+            memcpy(&v->value.u16, p, sizeof(v->value.u16));
+        } return;
+        case VALUE_S32: {
+            memcpy(&v->value.s32, p, sizeof(v->value.s32));
+        } return;
+        case VALUE_U32: {
+            memcpy(&v->value.u32, p, sizeof(v->value.u32));
+        } return;
+        case VALUE_S64: {
+            memcpy(&v->value.s64, p, sizeof(v->value.s64));
+        } return;
+        case VALUE_U64: {
+            memcpy(&v->value.u64, p, sizeof(v->value.u64));
+        } return;
+        case VALUE_F32: {
+            memcpy(&v->value.f32, p, sizeof(v->value.f32));
+        } return;
+        case VALUE_F64: {
+            memcpy(&v->value.f64, p, sizeof(v->value.f64));
+        } return;
+    }
+    abort();
+}
+
+static int
+value_compare(const struct value *a, const struct value *b)
+{
+    if (a->type != b->type)
+        return a->type - b->type;
+    switch (a->type) {
+        case VALUE_S8: {
+            int_fast8_t va = a->value.s8;
+            int_fast8_t vb = b->value.s8;
+            if (va < vb)
+                return -1;
+            else if (va > vb)
+                return 1;
+            else
+                return 0;
+        } break;
+        case VALUE_U8: {
+            uint_fast8_t va = a->value.u8;
+            uint_fast8_t vb = b->value.u8;
+            if (va < vb)
+                return -1;
+            else if (va > vb)
+                return 1;
+            else
+                return 0;
+        } break;
+        case VALUE_S16: {
+            int_fast16_t va = a->value.s16;
+            int_fast16_t vb = b->value.s16;
+            if (va < vb)
+                return -1;
+            else if (va > vb)
+                return 1;
+            else
+                return 0;
+        } break;
+        case VALUE_U16: {
+            uint_fast16_t va = a->value.u16;
+            uint_fast16_t vb = b->value.u16;
+            if (va < vb)
+                return -1;
+            else if (va > vb)
+                return 1;
+            else
+                return 0;
+        } break;
+        case VALUE_S32: {
+            int_fast32_t va = a->value.s32;
+            int_fast32_t vb = b->value.s32;
+            if (va < vb)
+                return -1;
+            else if (va > vb)
+                return 1;
+            else
+                return 0;
+        } break;
+        case VALUE_U32: {
+            uint_fast32_t va = a->value.u32;
+            uint_fast32_t vb = b->value.u32;
+            if (va < vb)
+                return -1;
+            else if (va > vb)
+                return 1;
+            else
+                return 0;
+        } break;
+        case VALUE_S64: {
+            int_fast64_t va = a->value.s64;
+            int_fast64_t vb = b->value.s64;
+            if (va < vb)
+                return -1;
+            else if (va > vb)
+                return 1;
+            else
+                return 0;
+        } break;
+        case VALUE_U64: {
+            uint_fast64_t va = a->value.u64;
+            uint_fast64_t vb = b->value.u64;
+            if (va < vb)
+                return -1;
+            else if (va > vb)
+                return 1;
+            else
+                return 0;
+        } break;
+        case VALUE_F32: {
+            float va = a->value.f32;
+            float vb = b->value.f32;
+            if (va < vb)
+                return -1;
+            else if (va > vb)
+                return 1;
+            else
+                return 0;
+        } break;
+        case VALUE_F64: {
+            double va = a->value.f64;
+            double vb = b->value.f64;
+            if (va < vb)
+                return -1;
+            else if (va > vb)
+                return 1;
+            else
+                return 0;
+        } break;
+    }
+    abort();
+}
+
 /* Watchlist */
 
 struct watchlist {
     os_handle process;
     size_t count;
     size_t size;
-    uintptr_t *addr;
+    struct {
+        uintptr_t addr;
+        struct value prev;
+    } *list;
 };
 
 static void
@@ -520,24 +881,26 @@ watchlist_init(struct watchlist *s, os_handle process)
     s->process = process;
     s->size = 4096;
     s->count = 0;
-    s->addr = malloc(s->size * sizeof(s->addr[0]));
+    s->list = malloc(s->size * sizeof(s->list[0]));
 }
 
 static void
-watchlist_push(struct watchlist *s, uintptr_t v)
+watchlist_push(struct watchlist *s, uintptr_t a, const struct value *v)
 {
     if (s->count == s->size) {
         s->size *= 2;
-        s->addr = realloc(s->addr, s->size * sizeof(s->addr[0]));
+        s->list = realloc(s->list, s->size * sizeof(s->list[0]));
     }
-    s->addr[s->count++] = v;
+    s->list[s->count].addr = a;
+    s->list[s->count].prev = *v;
+    s->count++;
 }
 
 static void
 watchlist_free(struct watchlist *s)
 {
-    free(s->addr);
-    s->addr = NULL;
+    free(s->list);
+    s->list = NULL;
 }
 
 static void
@@ -548,262 +911,107 @@ watchlist_clear(struct watchlist *s)
 
 /* Memory scanning */
 
-#define xstr(s) str(s)
-#define str(s) #s
-
-#define SCAN_NAME scan_u8
-#define NARROW_NAME narrow_u8
-#define SCAN_TYPE uint8_t
-#include "scan.c"
-#undef SCAN_NAME
-#undef NARROW_NAME
-#undef SCAN_TYPE
-
-#define SCAN_NAME scan_s8
-#define NARROW_NAME narrow_s8
-#define SCAN_TYPE int8_t
-#include "scan.c"
-#undef SCAN_NAME
-#undef NARROW_NAME
-#undef SCAN_TYPE
-
-#define SCAN_NAME scan_u16
-#define NARROW_NAME narrow_u16
-#define SCAN_TYPE uint16_t
-#include "scan.c"
-#undef SCAN_NAME
-#undef NARROW_NAME
-#undef SCAN_TYPE
-
-#define SCAN_NAME scan_s16
-#define NARROW_NAME narrow_s16
-#define SCAN_TYPE int16_t
-#include "scan.c"
-#undef SCAN_NAME
-#undef NARROW_NAME
-#undef SCAN_TYPE
-
-#define SCAN_NAME scan_u32
-#define NARROW_NAME narrow_u32
-#define SCAN_TYPE uint32_t
-#include "scan.c"
-#undef SCAN_NAME
-#undef NARROW_NAME
-#undef SCAN_TYPE
-
-#define SCAN_NAME scan_s32
-#define NARROW_NAME narrow_s32
-#define SCAN_TYPE int32_t
-#include "scan.c"
-#undef SCAN_NAME
-#undef NARROW_NAME
-#undef SCAN_TYPE
-
-#define SCAN_NAME scan_u64
-#define NARROW_NAME narrow_u64
-#define SCAN_TYPE uint64_t
-#include "scan.c"
-#undef SCAN_NAME
-#undef NARROW_NAME
-#undef SCAN_TYPE
-
-#define SCAN_NAME scan_s64
-#define NARROW_NAME narrow_s64
-#define SCAN_TYPE int64_t
-#include "scan.c"
-#undef SCAN_NAME
-#undef NARROW_NAME
-#undef SCAN_TYPE
-
-#define SCAN_NAME scan_f32
-#define NARROW_NAME narrow_f32
-#define SCAN_TYPE float
-#include "scan.c"
-#undef SCAN_NAME
-#undef NARROW_NAME
-#undef SCAN_TYPE
-
-#define SCAN_NAME scan_f64
-#define NARROW_NAME narrow_f64
-#define SCAN_TYPE double
-#include "scan.c"
-#undef SCAN_NAME
-#undef NARROW_NAME
-#undef SCAN_TYPE
-
-struct scan_value {
-    enum scan_value_type {
-        SCAN_VALUE_S8,
-        SCAN_VALUE_U8,
-        SCAN_VALUE_S16,
-        SCAN_VALUE_U16,
-        SCAN_VALUE_S32,
-        SCAN_VALUE_U32,
-        SCAN_VALUE_S64,
-        SCAN_VALUE_U64,
-        SCAN_VALUE_F32,
-        SCAN_VALUE_F64,
-    } type;
-    union {
-        int64_t s;
-        uint64_t u;
-        double f;
-    } value;
+enum scan_op {
+    SCAN_OP_EQ,
+    SCAN_OP_LT,
+    SCAN_OP_GT,
+    SCAN_OP_LTEG,
+    SCAN_OP_GTEQ,
 };
 
 static int
-scan_value_parse(struct scan_value *v, const char *arg)
+scan_op_parse(const char *s, enum scan_op *op)
 {
-    v->type = SCAN_VALUE_S64;
-    int is_hex = 0;
-    char *end;
-    if (strncmp(arg, "0x", 2) == 0) {
-        is_hex = 1;
-        v->type = SCAN_VALUE_U64;
-        errno = 0;
-        v->value.u = strtoull(arg + 2, &end, 16);
-    } else {
-        errno = 0;
-        v->value.s = strtoll(arg, &end, 10);
-    }
-    if (!is_hex && *end == 'u') {
-        if (arg[0] == '-')
-            return 0;
-        // try again as unsigned
-        v->type = SCAN_VALUE_U64;
-        errno = 0;
-        v->value.u = strtoull(arg, &end, 10);
-        end++;
-    } else if (!is_hex && *end == '.') {
-        errno = 0;
-        v->value.f = strtod(arg, &end);
-        if (errno)
-            return 0;
-        if (strcmp(end, "f") == 0)
-            v->type = SCAN_VALUE_F32;
-        else if (strcmp(end, "") == 0)
-            v->type = SCAN_VALUE_F64;
-        else
-            return 0;
-        return 1;
-    } else if (errno) {
-        return 0;
-    }
-    if (end[0] && end[1])
-        return 0; // too much suffix
-    switch (*end) {
-        case 'b':
-            v->type -= 6;
+    static const struct {
+        char name[3];
+        enum scan_op op;
+    } table[] = {
+        {"=", SCAN_OP_EQ},
+        {"<", SCAN_OP_LT},
+        {">", SCAN_OP_GT},
+        {"<=", SCAN_OP_LTEG},
+        {">=", SCAN_OP_GTEQ},
+    };
+    for (unsigned i = 0; i < sizeof(table) / sizeof(table[0]); i++)
+        if (strcmp(table[i].name, s) == 0) {
+            *op = table[i].op;
             return 1;
-        case 'h':
-            v->type -= 4;
-            return 1;
-        case 0:
-            v->type -= 2;
-            return 1;
-        case 'q':
-            return 1;
-    }
+        }
     return 0;
-}
-
-static void
-scan_value_pointer(struct scan_value *v, void *buf, unsigned *size)
-{
-    switch (v->type) {
-        case SCAN_VALUE_S8:
-            *size = 1;
-            *(int8_t *)buf = (int8_t)v->value.s;
-            break;
-        case SCAN_VALUE_U8:
-            *size = 1;
-            *(uint8_t *)buf = (uint8_t)v->value.u;
-            break;
-        case SCAN_VALUE_S16:
-            *size = 2;
-            *(int16_t *)buf = (int16_t)v->value.s;
-            break;
-        case SCAN_VALUE_U16:
-            *size = 2;
-            *(uint16_t *)buf = (uint16_t)v->value.u;
-            break;
-        case SCAN_VALUE_S32:
-            *size = 4;
-            *(int32_t *)buf = (int32_t)v->value.s;
-            break;
-        case SCAN_VALUE_U32:
-            *size = 4;
-            *(uint32_t *)buf = (uint32_t)v->value.u;
-            break;
-        case SCAN_VALUE_S64:
-            *size = 8;
-            *(int64_t *)buf = v->value.s;
-            break;
-        case SCAN_VALUE_U64:
-            *size = 8;
-            *(uint64_t *)buf = v->value.u;
-            break;
-        case SCAN_VALUE_F32:
-            *size = 4;
-            *(float *)buf = (float)v->value.f;
-            break;
-        case SCAN_VALUE_F64:
-            *size = 8;
-            *(double *)buf = v->value.f;
-            break;
-    }
 }
 
 static int
-scan(struct watchlist *wl, char op, struct scan_value *v)
+scan(struct watchlist *wl, struct value *v, enum scan_op op)
 {
+    unsigned value_size = VALUE_SIZE(*v);
+    enum value_type type = v->type;
     watchlist_clear(wl);
-    switch (v->type) {
-        case SCAN_VALUE_S8:
-            return scan_s8(wl, op, (int8_t)v->value.s);
-        case SCAN_VALUE_U8:
-            return scan_u8(wl, op, (uint8_t)v->value.u);
-        case SCAN_VALUE_S16:
-            return scan_s16(wl, op, (int16_t)v->value.s);
-        case SCAN_VALUE_U16:
-            return scan_u16(wl, op, (uint16_t)v->value.u);
-        case SCAN_VALUE_S32:
-            return scan_s32(wl, op, (int32_t)v->value.s);
-        case SCAN_VALUE_U32:
-            return scan_u32(wl, op, (uint32_t)v->value.u);
-        case SCAN_VALUE_S64:
-            return scan_s64(wl, op, v->value.s);
-        case SCAN_VALUE_U64:
-            return scan_u64(wl, op, v->value.u);
-        case SCAN_VALUE_F32:
-            return scan_f32(wl, op, (float)v->value.f);
-        case SCAN_VALUE_F64:
-            return scan_f64(wl, op, v->value.f);
+    struct region_iterator it[1];
+    region_iterator_init(it, wl->process);
+    for (; !region_iterator_done(it); region_iterator_next(it)) {
+        const char *buf;
+        if ((buf = region_iterator_memory(it))) {
+            size_t count = it->size / value_size;
+            for (size_t i = 0; i < count; i++) {
+                struct value read;
+                value_read(&read, type, buf + i * value_size);
+                int cmp = value_compare(&read, v);
+                int pass = 0;
+                switch (op) {
+                    case SCAN_OP_EQ:
+                        pass = cmp == 0;
+                        break;
+                    case SCAN_OP_LT:
+                        pass = cmp < 0;
+                        break;
+                    case SCAN_OP_GT:
+                        pass = cmp > 0;
+                        break;
+                    case SCAN_OP_LTEG:
+                        pass = cmp <= 0;
+                        break;
+                    case SCAN_OP_GTEQ:
+                        pass = cmp >= 0;
+                        break;
+                }
+                if (pass) {
+                    uintptr_t addr = it->base + i * value_size;
+                    watchlist_push(wl, addr, &read);
+                }
+            }
+        } else {
+            LOG_DEBUG("memory read failed [0x%016" PRIxPTR "]: %s\n",
+                      it->base, os_last_error());
+        }
     }
-    return 0;
+    region_iterator_destroy(it);
+    return 1;
 }
 
-typedef void (*region_visitor)(uintptr_t, const void *, void *);
+typedef void (*watchlist_visitor)(uintptr_t, const struct value *, void *);
 
 static void
-region_visit(struct watchlist *wl, region_visitor f, void *arg)
+watchlist_visit(struct watchlist *wl, watchlist_visitor f, void *arg)
 {
     struct region_iterator it[1];
     region_iterator_init(it, wl->process);
     size_t n = 0;
     for (; !region_iterator_done(it) && n < wl->count; region_iterator_next(it)) {
-        char *buf = NULL;
+        const char *buf = NULL;
         uintptr_t base = it->base;
         uintptr_t tail = base + it->size;
-        while (n < wl->count && wl->addr[n] < base)
+        while (n < wl->count && wl->list[n].addr < base)
             n++;
-        while (n < wl->count && wl->addr[n] >= base && wl->addr[n] < tail) {
+        while (n < wl->count && wl->list[n].addr >= base && wl->list[n].addr < tail) {
             if (!buf)
                 buf = region_iterator_memory(it);
-            uintptr_t addr = wl->addr[n];
+            uintptr_t addr = wl->list[n].addr;
+            enum value_type type = wl->list[n].prev.type;
+            size_t offset = wl->list[n].addr - base;
             if (buf) {
-                size_t d = wl->addr[n] - base;
-                f(addr, buf + d, arg);
+                struct value value;
+                value_read(&value, type, buf + offset);
+                f(addr, &value, arg);
             } else {
                 f(addr, NULL, arg);
             }
@@ -813,93 +1021,52 @@ region_visit(struct watchlist *wl, region_visitor f, void *arg)
     region_iterator_destroy(it);
 }
 
+struct narrow_visitor_state {
+    struct watchlist *wl;
+    struct value target;
+    enum scan_op op;
+};
+
+static void
+narrow_visitor(uintptr_t addr, const struct value *v, void *arg)
+{
+    char buf[64];
+    value_print(buf, sizeof(buf), v);
+    struct narrow_visitor_state *s = arg;
+    int cmp = value_compare(v, &s->target);
+    int pass = 0;
+    switch (s->op) {
+        case SCAN_OP_EQ:
+            pass = cmp == 0;
+            break;
+        case SCAN_OP_LT:
+            pass = cmp < 0;
+            break;
+        case SCAN_OP_GT:
+            pass = cmp > 0;
+            break;
+        case SCAN_OP_LTEG:
+            pass = cmp <= 0;
+            break;
+        case SCAN_OP_GTEQ:
+            pass = cmp >= 0;
+            break;
+    }
+    if (pass)
+        watchlist_push(s->wl, addr, v);
+}
+
 static int
-narrow(struct watchlist *wl, char op, struct scan_value *v)
+narrow(struct watchlist *wl, enum scan_op op, struct value *v)
 {
     struct watchlist out[1];
     watchlist_init(out, wl->process);
-    switch (v->type) {
-        case SCAN_VALUE_S8: {
-            struct narrow_s8 state = {
-                .watchlist = out,
-                .op = op,
-                .value = (int8_t)v->value.s,
-            };
-            region_visit(wl, narrow_s8, &state);
-        } break;
-        case SCAN_VALUE_U8: {
-            struct narrow_u8 state = {
-                .watchlist = out,
-                .op = op,
-                .value = (uint8_t)v->value.u,
-            };
-            region_visit(wl, narrow_u8, &state);
-        } break;
-        case SCAN_VALUE_S16: {
-            struct narrow_s16 state = {
-                .watchlist = out,
-                .op = op,
-                .value = (int16_t)v->value.s,
-            };
-            region_visit(wl, narrow_s16, &state);
-        } break;
-        case SCAN_VALUE_U16: {
-            struct narrow_u16 state = {
-                .watchlist = out,
-                .op = op,
-                .value = (uint16_t)v->value.u,
-            };
-            region_visit(wl, narrow_u16, &state);
-        } break;
-        case SCAN_VALUE_S32: {
-            struct narrow_s32 state = {
-                .watchlist = out,
-                .op = op,
-                .value = (int32_t)v->value.s,
-            };
-            region_visit(wl, narrow_s32, &state);
-        } break;
-        case SCAN_VALUE_U32: {
-            struct narrow_u32 state = {
-                .watchlist = out,
-                .op = op,
-                .value = (uint32_t)v->value.u,
-            };
-            region_visit(wl, narrow_u32, &state);
-        } break;
-        case SCAN_VALUE_S64: {
-            struct narrow_s64 state = {
-                .watchlist = out,
-                .op = op,
-                .value = v->value.s,
-            };
-            region_visit(wl, narrow_s64, &state);
-        } break;
-        case SCAN_VALUE_U64: {
-            struct narrow_u64 state = {
-                .watchlist = out,
-                .op = op,
-                .value = v->value.u,
-            };
-            region_visit(wl, narrow_u64, &state);
-        } break;
-        case SCAN_VALUE_F32: {
-            struct narrow_f32 state = {
-                .watchlist = out,
-                .op = op,
-                .value = (float)v->value.f,
-            };
-            region_visit(wl, narrow_f32, &state);
-        } break;
-        case SCAN_VALUE_F64: {
-            struct narrow_f64 state = {
-                .watchlist = out,
-                .op = op,
-                .value = v->value.f,
-            };
-            region_visit(wl, narrow_f64, &state);
-        } break;
-    }
+    struct narrow_visitor_state state = {
+        .wl = out,
+        .target = *v,
+        .op = op,
+    };
+    watchlist_visit(wl, narrow_visitor, &state);
     watchlist_free(wl);
     *wl = *out;
     return 1;
@@ -1036,23 +1203,24 @@ command_parse(const char *c)
 struct memdig {
     os_pid id;
     os_handle target;
+    enum value_type last_type;
     struct watchlist watchlist;
 };
 
 static void
 memdig_init(struct memdig *m)
 {
-    *m = (struct memdig){0, 0};
+    *m = (struct memdig){.last_type = VALUE_S32};
 }
 
 static void
-list_visitor(uintptr_t addr, const void *mem, void *arg)
+list_visitor(uintptr_t addr, const struct value *v, void *arg)
 {
+    char buf[64] = "???";
     (void)arg;
-    if (mem)
-        printf("0x%016" PRIxPTR " %" PRIu32 "\n", addr, *(uint32_t *)mem);
-    else
-        printf("0x%016" PRIxPTR " ???\n", addr);
+    if (v)
+        value_print(buf, sizeof(buf), v);
+    printf("0x%016" PRIxPTR " %s\n", addr, buf);
 }
 
 enum memdig_result {
@@ -1120,18 +1288,30 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 LOG_ERROR("no process attached\n");
             if (argc < 2 || argc > 3)
                 LOG_ERROR("wrong number of arguments\n");
-            char op = '=';
-            const char *value = argv[1];
+            enum scan_op op = SCAN_OP_EQ;
+            const char *arg = argv[1];
             if (argc == 3) {
-                op = argv[1][0];
-                if (strlen(argv[1]) != 1 || !strchr("<=>", op))
+                if (!scan_op_parse(argv[1], &op))
                     LOG_ERROR("invalid operator '%s'\n", argv[1]);
-                value = argv[2];
+                arg = argv[2];
             }
-            struct scan_value scan_value;
-            if (!scan_value_parse(&scan_value, value))
-                LOG_ERROR("invalid value '%s'\n", value);
-            if (!scan(&m->watchlist, op, &scan_value))
+            struct value value;
+            enum value_parse_result r = value_parse(&value, arg);
+            switch (r) {
+                case VALUE_PARSE_OVERFLOW: {
+                    LOG_ERROR("overflow '%s'\n", arg);
+                } break;
+                case VALUE_PARSE_INVALID: {
+                    LOG_ERROR("invalid value '%s'\n", arg);
+                } break;
+                case VALUE_PARSE_SUCCESS: {
+                    char buf[64];
+                    value_print(buf, sizeof(buf), &value);
+                    LOG_INFO("finding %s\n", buf);
+                } break;
+            }
+            m->last_type = value.type;
+            if (!scan(&m->watchlist, &value, op))
                 LOG_ERROR("scan failure'\n");
             else
                 printf("%zu values found\n", m->watchlist.count);
@@ -1141,18 +1321,30 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 LOG_ERROR("no process attached\n");
             if (argc < 2 || argc > 3)
                 LOG_ERROR("wrong number of arguments\n");
-            char op = '=';
-            const char *value = argv[1];
+            enum scan_op op = SCAN_OP_EQ;
+            const char *arg = argv[1];
             if (argc == 3) {
-                op = argv[1][0];
-                if (strlen(argv[1]) != 1 || !strchr("<=>", op))
+                if (!scan_op_parse(argv[1], &op))
                     LOG_ERROR("invalid operator '%s'\n", argv[1]);
-                value = argv[2];
+                arg = argv[2];
             }
-            struct scan_value scan_value;
-            if (!scan_value_parse(&scan_value, value))
-                LOG_ERROR("invalid value '%s'\n", value);
-            if (!narrow(&m->watchlist, op, &scan_value))
+            struct value value;
+            enum value_parse_result r = value_parse(&value, arg);
+            switch (r) {
+                case VALUE_PARSE_OVERFLOW: {
+                    LOG_ERROR("overflow '%s'\n", arg);
+                } break;
+                case VALUE_PARSE_INVALID: {
+                    LOG_ERROR("invalid value '%s'\n", arg);
+                } break;
+                case VALUE_PARSE_SUCCESS: {
+                    char buf[64];
+                    value_print(buf, sizeof(buf), &value);
+                    LOG_INFO("narrowing to %s\n", buf);
+                } break;
+            }
+
+            if (!narrow(&m->watchlist, op, &value))
                 LOG_ERROR("scan failure'\n");
             else
                 printf("%zu values found\n", m->watchlist.count);
@@ -1166,7 +1358,8 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             if (strncmp(addrs, "0x", 2) != 0)
                 LOG_ERROR("unknown address format '%s'\n", addrs);
             uintptr_t addr = (uintptr_t)strtoull(addrs + 2, NULL, 16);
-            watchlist_push(&m->watchlist, addr);
+            struct value value = {.type = m->last_type};
+            watchlist_push(&m->watchlist, addr, &value);
         } break;
         case COMMAND_LIST: {
             char arg = 'a';
@@ -1176,7 +1369,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 case 'a': {
                     if (!m->target)
                         LOG_ERROR("no process attached\n");
-                    region_visit(&m->watchlist, list_visitor, 0);
+                    watchlist_visit(&m->watchlist, list_visitor, 0);
                 } break;
                 case 'p': {
                     struct process_iterator it[1];
@@ -1195,17 +1388,29 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 LOG_ERROR("no process attached\n");
             if (argc != 2)
                 LOG_ERROR("wrong number of arguments");
-            const char *value = argv[1];
-            struct scan_value scan_value;
-            if (!scan_value_parse(&scan_value, value))
-                LOG_ERROR("invalid value '%s'\n", value);
+            const char *arg = argv[1];
+            struct value value;
+            enum value_parse_result r = value_parse(&value, arg);
+            switch (r) {
+                case VALUE_PARSE_OVERFLOW: {
+                    LOG_ERROR("overflow '%s'\n", arg);
+                } break;
+                case VALUE_PARSE_INVALID: {
+                    LOG_ERROR("invalid value '%s'\n", arg);
+                } break;
+                case VALUE_PARSE_SUCCESS: {
+                    char buf[64];
+                    value_print(buf, sizeof(buf), &value);
+                    LOG_INFO("setting to %s\n", buf);
+                } break;
+            }
+            m->last_type = value.type;
             size_t set_count = 0;
             for (size_t i = 0; i < m->watchlist.count; i++) {
-                uintptr_t addr = m->watchlist.addr[i];
-                unsigned size = 0;
-                char buf[8];
-                scan_value_pointer(&scan_value, buf, &size);
-                if (!os_write_memory(m->target, addr, buf, size))
+                uintptr_t addr = m->watchlist.list[i].addr;
+                unsigned size = VALUE_SIZE((struct value){.type = m->last_type});
+                void *newv = &value.value;
+                if (!os_write_memory(m->target, addr, newv, size))
                     LOG_WARNING("write memory failed: %s\n",
                                 os_last_error());
                 else
