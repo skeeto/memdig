@@ -47,12 +47,12 @@ the interactive prompt.
 ## Supported Types
 
 Suffixes can be used to set the type when searching memory. There are
-three integer width specifiers: byte (b), short (h), and quad (q), and
-each integer type is optionally unsigned (ub, uh, u, uq). For floating
+three integer width specifiers: byte (o), short (h), and quad (q), and
+each integer type is optionally unsigned (uo, uh, u, uq). For floating
 point, include a decimal or exponent in the normal format. An f suffix
 indicates single precision.
 
-* -45b (signed 8-bit)
+* -45o (signed 8-bit)
 * 40000uh (unsigned 16-bit)
 * 0xffffq (unsigned 64-bit)
 * 10.0 (double)
@@ -66,17 +66,12 @@ abstracted, so support for additional platforms could be easily added.
 ## Future Plans
 
 * Remote, network interface
-* More values types (integer widths, floats, strings, SIMD)
-* Range or expression searches, especially in regards to floats
+* More values types (strings, SIMD)
 * Readline support (especially on Linux)
-* Various alignment and stride options
 * Automatic re-attach
-* Value locking with configurable refresh rate
-* Manual address removal
+* Watchlist editing (add, remove)
 * Save/load address lists by name, to file
-* WTF-8 transation across Windows APIs
 * Address list transformations and filters
-* Hexadecimal arguments
 * Progress indicator (find)
 * Symbol and region oriented commands (locate known addresses after ASLR)
 * (long shot) Export/create trainer EXE for a specific target

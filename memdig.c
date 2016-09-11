@@ -1217,11 +1217,11 @@ static struct {
     },
     [COMMAND_FIND] = {
         "find", "find and remember integral memory values",
-        "[<|>|=] <value>"
+        "[<|>|=|<=|>=] <value>"
     },
     [COMMAND_NARROW] = {
         "narrow", "filter the current list of addresses",
-        "[<|>|=] <value>"
+        "[<|>|=|<=|>=] <value>"
     },
     [COMMAND_PUSH] = {
         "push", "manually add address to list",
@@ -1229,7 +1229,7 @@ static struct {
     },
     [COMMAND_LIST] = {
         "list", "show the current address list",
-        "[proc|addr|locks]"
+        "[proc|addr|lock]"
     },
     [COMMAND_SET] = {
         "set", "set memory at each listed address",
@@ -1563,7 +1563,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 const char *name = command_info[i].name;
                 const char *help = command_info[i].help;
                 const char *args = command_info[i].args;
-                int argsize = (int)(26 - strlen(name));
+                int argsize = (int)(30 - strlen(name));
                 printf("%s %-*s %s\n", name, argsize, args ? args : "", help);
             }
             putchar('\n');
@@ -1573,7 +1573,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             puts("By default, memory is scanned for 32-bit signed integers. "
                  "The numeric\narguments to find, narrow, and set may have "
                  "C-like suffixes specifying\ntheir width and signedness "
-                 "(b, h, q, ub, uh, uq). Floating point\nvalues are also "
+                 "(o, h, q, uo, uh, uq). Floating point\nvalues are also "
                  "an option, with an 'f' suffix for single precision.");
         } break;
         case COMMAND_QUIT: {
