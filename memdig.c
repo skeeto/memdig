@@ -2,12 +2,6 @@
 #include <stdlib.h>
 #include <inttypes.h>
 
-#define PROMPT(f)                               \
-    do {                                        \
-        fputs("> ", f);                         \
-        fflush(f);                              \
-    } while(0)
-
 /* Platform API */
 
 #define REGION_ITERATOR_DONE    (1UL << 0)
@@ -817,112 +811,34 @@ value_read(struct value *v, enum value_type t, const void *p)
     abort();
 }
 
+#define VALUE_COMPARE(a, b) ((a) < (b) ? -1 : (b) < (a) ? 1 : 0)
+
 static int
 value_compare(const struct value *a, const struct value *b)
 {
     if (a->type != b->type)
         return a->type - b->type;
     switch (a->type) {
-        case VALUE_S8: {
-            int_fast8_t va = a->value.s8;
-            int_fast8_t vb = b->value.s8;
-            if (va < vb)
-                return -1;
-            else if (va > vb)
-                return 1;
-            else
-                return 0;
-        } break;
-        case VALUE_U8: {
-            uint_fast8_t va = a->value.u8;
-            uint_fast8_t vb = b->value.u8;
-            if (va < vb)
-                return -1;
-            else if (va > vb)
-                return 1;
-            else
-                return 0;
-        } break;
-        case VALUE_S16: {
-            int_fast16_t va = a->value.s16;
-            int_fast16_t vb = b->value.s16;
-            if (va < vb)
-                return -1;
-            else if (va > vb)
-                return 1;
-            else
-                return 0;
-        } break;
-        case VALUE_U16: {
-            uint_fast16_t va = a->value.u16;
-            uint_fast16_t vb = b->value.u16;
-            if (va < vb)
-                return -1;
-            else if (va > vb)
-                return 1;
-            else
-                return 0;
-        } break;
-        case VALUE_S32: {
-            int_fast32_t va = a->value.s32;
-            int_fast32_t vb = b->value.s32;
-            if (va < vb)
-                return -1;
-            else if (va > vb)
-                return 1;
-            else
-                return 0;
-        } break;
-        case VALUE_U32: {
-            uint_fast32_t va = a->value.u32;
-            uint_fast32_t vb = b->value.u32;
-            if (va < vb)
-                return -1;
-            else if (va > vb)
-                return 1;
-            else
-                return 0;
-        } break;
-        case VALUE_S64: {
-            int_fast64_t va = a->value.s64;
-            int_fast64_t vb = b->value.s64;
-            if (va < vb)
-                return -1;
-            else if (va > vb)
-                return 1;
-            else
-                return 0;
-        } break;
-        case VALUE_U64: {
-            uint_fast64_t va = a->value.u64;
-            uint_fast64_t vb = b->value.u64;
-            if (va < vb)
-                return -1;
-            else if (va > vb)
-                return 1;
-            else
-                return 0;
-        } break;
-        case VALUE_F32: {
-            float va = a->value.f32;
-            float vb = b->value.f32;
-            if (va < vb)
-                return -1;
-            else if (va > vb)
-                return 1;
-            else
-                return 0;
-        } break;
-        case VALUE_F64: {
-            double va = a->value.f64;
-            double vb = b->value.f64;
-            if (va < vb)
-                return -1;
-            else if (va > vb)
-                return 1;
-            else
-                return 0;
-        } break;
+        case VALUE_S8:
+            return VALUE_COMPARE(a->value.s8, b->value.s8);
+        case VALUE_U8:
+            return VALUE_COMPARE(a->value.u8, b->value.u8);
+        case VALUE_S16:
+            return VALUE_COMPARE(a->value.s16, b->value.s16);
+        case VALUE_U16:
+            return VALUE_COMPARE(a->value.u16, b->value.u16);
+        case VALUE_S32:
+            return VALUE_COMPARE(a->value.s32, b->value.s32);
+        case VALUE_U32:
+            return VALUE_COMPARE(a->value.u32, b->value.u32);
+        case VALUE_S64:
+            return VALUE_COMPARE(a->value.s64, b->value.s64);
+        case VALUE_U64:
+            return VALUE_COMPARE(a->value.u64, b->value.u64);
+        case VALUE_F32:
+            return VALUE_COMPARE(a->value.f32, b->value.f32);
+        case VALUE_F64:
+            return VALUE_COMPARE(a->value.f64, b->value.f64);
     }
     abort();
 }
@@ -1267,7 +1183,7 @@ command_parse(const char *c)
     return command;
 }
 
-/* High level Memdig API */
+/* High level MemDig API */
 
 struct memdig {
     os_pid id;
@@ -1281,7 +1197,6 @@ static void
 memdig_locker(struct memdig *m)
 {
     for (;;) {
-        (void)m;
         os_sleep(0.1);
         os_mutex_lock();
         if (m->target)
@@ -1303,13 +1218,12 @@ memdig_init(struct memdig *m)
 }
 
 static void
-list_visitor(uintptr_t addr, const struct value *v, void *arg)
+list_visitor(uintptr_t addr, const struct value *v, void *file)
 {
     char buf[64] = "???";
-    (void)arg;
     if (v)
         value_print(buf, sizeof(buf), v);
-    printf("0x%016" PRIxPTR " %s\n", addr, buf);
+    fprintf(file, "0x%016" PRIxPTR " %s\n", addr, buf);
 }
 
 enum memdig_result {
@@ -1464,14 +1378,14 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 case 'a': {
                     if (!m->target)
                         LOG_ERROR("no process attached\n");
-                    watchlist_visit(&m->active, list_visitor, 0);
+                    watchlist_visit(&m->active, list_visitor, stdout);
                 } break;
                 case 'p': {
-                    struct process_iterator it[1];
-                    process_iterator_init(it);
-                    for (; !process_iterator_done(it); process_iterator_next(it))
-                        printf("%8ld %s\n", (long)it->pid, it->name);
-                    process_iterator_destroy(it);
+                    struct process_iterator i[1];
+                    process_iterator_init(i);
+                    for (; !process_iterator_done(i); process_iterator_next(i))
+                        printf("%8ld %s\n", (long)i->pid, i->name);
+                    process_iterator_destroy(i);
                 } break;
                 case 'l': {
                     if (!m->target)
@@ -1508,9 +1422,8 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             size_t set_count = 0;
             for (size_t i = 0; i < m->active.count; i++) {
                 uintptr_t addr = m->active.list[i].addr;
-                unsigned size = VALUE_SIZE((struct value){.type = m->last_type});
-                void *newv = &value.value;
-                if (!os_write_memory(m->target, addr, newv, size))
+                unsigned size = VALUE_SIZE(value);
+                if (!os_write_memory(m->target, addr, &value.value, size))
                     LOG_WARNING("write memory failed: %s\n",
                                 os_last_error());
                 else
@@ -1547,8 +1460,8 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             os_mutex_lock();
             for (size_t i = 0; i < m->active.count; i++) {
                 uintptr_t addr = m->active.list[i].addr;
-                struct value *prev = have_value ? &value : &m->active.list[i].prev;
-                watchlist_push(&m->locked, addr, prev);
+                struct value *prev = &m->active.list[i].prev;
+                watchlist_push(&m->locked, addr, have_value ? &value : prev);
             }
             os_mutex_unlock();
         } break;
@@ -1597,6 +1510,12 @@ memdig_free(struct memdig *m)
         os_mutex_unlock();
     }
 }
+
+#define PROMPT(f)                               \
+    do {                                        \
+        fputs("> ", f);                         \
+        fflush(f);                              \
+    } while(0)
 
 int
 main(int argc, char **argv)

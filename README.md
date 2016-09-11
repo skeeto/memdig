@@ -67,6 +67,7 @@ abstracted, so support for additional platforms could be easily added.
 
 * Remote, network interface
 * More values types (strings, SIMD)
+* Better handling of NaN and inf
 * Readline support (especially on Linux)
 * Automatic re-attach
 * Watchlist editing (add, remove)
