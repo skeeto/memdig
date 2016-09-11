@@ -36,6 +36,10 @@ void        os_sleep(double);
 os_handle   os_process_open(os_pid);
 void        os_process_close(os_handle);
 const char *os_last_error(void);
+
+void        os_thread_start(struct memdig *);
+void        os_mutex_lock(void);
+void        os_mutex_unlock(void);
 #endif
 
 /* MemDig API for platform */
@@ -238,6 +242,37 @@ os_last_error(void)
     return error_buffer;
 }
 
+static void
+os_stub(void *arg)
+{
+    memdig_locker(arg);
+}
+
+static CRITICAL_SECTION os_mutex;
+static BOOL os_mutex_initialized;
+
+static void
+os_thread_start(struct memdig *m)
+{
+    if (!os_mutex_initialized) {
+        InitializeCriticalSection(&os_mutex);
+        os_mutex_initialized = TRUE;
+    }
+    _beginthread(os_stub, 0, m);
+}
+
+static void
+os_mutex_lock(void)
+{
+    EnterCriticalSection(&os_mutex);
+}
+
+static void
+os_mutex_unlock(void)
+{
+    LeaveCriticalSection(&os_mutex);
+}
+
 #elif __linux__
 #include <math.h>
 #include <time.h>
@@ -245,6 +280,7 @@ os_last_error(void)
 #include <string.h>
 
 #include <dirent.h>
+#include <pthread.h>
 #include <sys/uio.h>
 
 typedef pid_t os_handle;
@@ -457,6 +493,35 @@ os_last_error(void)
     return strerror(errno);
 }
 
+static void *
+os_stub(void *arg)
+{
+    memdig_locker(arg);
+    return NULL;
+}
+
+static pthread_mutex_t os_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void
+os_thread_start(struct memdig *m)
+{
+    pthread_t thread;
+    pthread_create(&thread, 0, os_stub, m);
+    pthread_detach(thread);
+}
+
+static void
+os_mutex_lock(void)
+{
+    pthread_mutex_lock(&os_mutex);
+}
+
+static void
+os_mutex_unlock(void)
+{
+    pthread_mutex_unlock(&os_mutex);
+}
+
 #endif // __linux__
 
 static int
@@ -589,7 +654,6 @@ value_parse(struct value *v, const char *arg)
         is_signed = 0;
         suffix++;
     }
-    printf("%s %s %d\n", arg, suffix, is_integer);
 
     /* Parse the in-between. */
     if (is_integer) {
@@ -1132,6 +1196,7 @@ enum command {
     COMMAND_PUSH,
     COMMAND_LIST,
     COMMAND_SET,
+    COMMAND_LOCK,
     COMMAND_WAIT,
     COMMAND_HELP,
     COMMAND_QUIT,
@@ -1150,7 +1215,7 @@ static struct {
         "memory", "list committed memory regions",
         0
     },
-    [COMMAND_FIND]   = {
+    [COMMAND_FIND] = {
         "find", "find and remember integral memory values",
         "[<|>|=] <value>"
     },
@@ -1162,22 +1227,26 @@ static struct {
         "push", "manually add address to list",
         "<address>"
     },
-    [COMMAND_LIST]   = {
+    [COMMAND_LIST] = {
         "list", "show the current address list",
-        "[proc|addr]"
+        "[proc|addr|locks]"
     },
-    [COMMAND_SET]    = {
+    [COMMAND_SET] = {
         "set", "set memory at each listed address",
         "<new value>"
     },
-    [COMMAND_WAIT]   = {
+    [COMMAND_LOCK] = {
+        "lock", "lock the memory at each listed address",
+        "[new value]"
+    },
+    [COMMAND_WAIT] = {
         "wait", "wait a fractional number of seconds",
         "<seconds>"
     },
-    [COMMAND_HELP]   = {
+    [COMMAND_HELP] = {
         "help", "print this help information",
         0},
-    [COMMAND_QUIT]   = {
+    [COMMAND_QUIT] = {
         "quit", "exit the program",
         0},
 };
@@ -1204,13 +1273,33 @@ struct memdig {
     os_pid id;
     os_handle target;
     enum value_type last_type;
-    struct watchlist watchlist;
+    struct watchlist active;
+    struct watchlist locked;
 };
+
+static void
+memdig_locker(struct memdig *m)
+{
+    for (;;) {
+        (void)m;
+        os_sleep(0.1);
+        os_mutex_lock();
+        if (m->target)
+            for (size_t i = 0; i < m->locked.count; i++) {
+                uintptr_t addr = m->locked.list[i].addr;
+                struct value *value = &m->locked.list[i].prev;
+                unsigned size = VALUE_SIZE(*value);
+                os_write_memory(m->target, addr, &value->value, size);
+            }
+        os_mutex_unlock();
+    }
+}
 
 static void
 memdig_init(struct memdig *m)
 {
     *m = (struct memdig){.last_type = VALUE_S32};
+    os_thread_start(m);
 }
 
 static void
@@ -1253,9 +1342,12 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             } else if (argc != 2)
                 LOG_ERROR("wrong number of arguments\n");
             if (m->target) {
-                watchlist_free(&m->watchlist);
+                os_mutex_lock();
+                watchlist_free(&m->active);
+                watchlist_free(&m->locked);
                 os_process_close(m->target);
                 m->target = 0;
+                os_mutex_unlock();
             }
             char *pattern = argv[1];
             switch (process_find(pattern, &m->id)) {
@@ -1266,15 +1358,18 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                     LOG_ERROR("ambiguous target '%s'\n", pattern);
                     break;
                 case FIND_SUCCESS:
+                    os_mutex_lock();
                     if (!(m->target = os_process_open(m->id))) {
                         if (!m->target)
                             LOG_ERROR("open process %ld failed: %s\n",
                                       (long)m->id, os_last_error());
                         m->id = 0;
                     } else {
-                        watchlist_init(&m->watchlist, m->target);
+                        watchlist_init(&m->active, m->target);
+                        watchlist_init(&m->locked, m->target);
                         printf("attached to %ld\n", (long)m->id);
                     }
+                    os_mutex_unlock();
                     break;
             }
         } break;
@@ -1311,10 +1406,10 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 } break;
             }
             m->last_type = value.type;
-            if (!scan(&m->watchlist, &value, op))
+            if (!scan(&m->active, &value, op))
                 LOG_ERROR("scan failure'\n");
             else
-                printf("%zu values found\n", m->watchlist.count);
+                printf("%zu values found\n", m->active.count);
         } break;
         case COMMAND_NARROW: {
             if (!m->target)
@@ -1344,10 +1439,10 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 } break;
             }
 
-            if (!narrow(&m->watchlist, op, &value))
+            if (!narrow(&m->active, op, &value))
                 LOG_ERROR("scan failure'\n");
             else
-                printf("%zu values found\n", m->watchlist.count);
+                printf("%zu values found\n", m->active.count);
         } break;
         case COMMAND_PUSH: {
             if (!m->target)
@@ -1359,7 +1454,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 LOG_ERROR("unknown address format '%s'\n", addrs);
             uintptr_t addr = (uintptr_t)strtoull(addrs + 2, NULL, 16);
             struct value value = {.type = m->last_type};
-            watchlist_push(&m->watchlist, addr, &value);
+            watchlist_push(&m->active, addr, &value);
         } break;
         case COMMAND_LIST: {
             char arg = 'a';
@@ -1369,7 +1464,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 case 'a': {
                     if (!m->target)
                         LOG_ERROR("no process attached\n");
-                    watchlist_visit(&m->watchlist, list_visitor, 0);
+                    watchlist_visit(&m->active, list_visitor, 0);
                 } break;
                 case 'p': {
                     struct process_iterator it[1];
@@ -1377,6 +1472,11 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                     for (; !process_iterator_done(it); process_iterator_next(it))
                         printf("%8ld %s\n", (long)it->pid, it->name);
                     process_iterator_destroy(it);
+                } break;
+                case 'l': {
+                    if (!m->target)
+                        LOG_ERROR("no process attached\n");
+                    watchlist_visit(&m->locked, list_visitor, 0);
                 } break;
                 default: {
                     LOG_ERROR("unknown list type '%s'\n", argv[1]);
@@ -1406,8 +1506,8 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             }
             m->last_type = value.type;
             size_t set_count = 0;
-            for (size_t i = 0; i < m->watchlist.count; i++) {
-                uintptr_t addr = m->watchlist.list[i].addr;
+            for (size_t i = 0; i < m->active.count; i++) {
+                uintptr_t addr = m->active.list[i].addr;
                 unsigned size = VALUE_SIZE((struct value){.type = m->last_type});
                 void *newv = &value.value;
                 if (!os_write_memory(m->target, addr, newv, size))
@@ -1417,6 +1517,40 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                     set_count++;
             }
             printf("%zu values set\n", set_count);
+        } break;
+        case COMMAND_LOCK: {
+            if (!m->target)
+                LOG_ERROR("no process attached\n");
+            if (argc > 2)
+                LOG_ERROR("wrong number of arguments");
+            struct value value;
+            int have_value = 0;
+            if (argc == 2) {
+                have_value = 1;
+                const char *arg = argv[1];
+                enum value_parse_result r = value_parse(&value, arg);
+                switch (r) {
+                    case VALUE_PARSE_OVERFLOW: {
+                        LOG_ERROR("overflow '%s'\n", arg);
+                    } break;
+                    case VALUE_PARSE_INVALID: {
+                        LOG_ERROR("invalid value '%s'\n", arg);
+                    } break;
+                    case VALUE_PARSE_SUCCESS: {
+                        char buf[64];
+                        value_print(buf, sizeof(buf), &value);
+                        LOG_INFO("setting to %s\n", buf);
+                    } break;
+                }
+                m->last_type = value.type;
+            }
+            os_mutex_lock();
+            for (size_t i = 0; i < m->active.count; i++) {
+                uintptr_t addr = m->active.list[i].addr;
+                struct value *prev = have_value ? &value : &m->active.list[i].prev;
+                watchlist_push(&m->locked, addr, prev);
+            }
+            os_mutex_unlock();
         } break;
         case COMMAND_WAIT: {
             if (argc != 2)
@@ -1455,8 +1589,12 @@ static void
 memdig_free(struct memdig *m)
 {
     if (m->target) {
-        watchlist_free(&m->watchlist);
+        os_mutex_lock();
+        watchlist_free(&m->active);
+        watchlist_free(&m->locked);
         os_process_close(m->target);
+        m->target = 0;
+        os_mutex_unlock();
     }
 }
 

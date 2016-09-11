@@ -1,6 +1,7 @@
-CFLAGS = -std=c99 -Wall -Wextra -Os -g3 \
+CFLAGS  = -std=c99 -Wall -Wextra -Os -g3 -pthread \
     -Wno-missing-field-initializers -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE
-LDLIBS = -lm
+LDFLAGS = -pthread
+LDLIBS  = -lm
 
 memdig : memdig.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
