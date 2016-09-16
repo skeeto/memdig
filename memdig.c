@@ -31,10 +31,10 @@ os_handle   os_process_open(os_pid);
 void        os_process_close(os_handle);
 const char *os_last_error(void);
 
-void        os_thread_start(struct os_thread *, struct memdig *);
-void        os_thread_join(struct os_thread *);
-void        os_mutex_lock(struct os_thread *);
-void        os_mutex_unlock(struct os_thread *);
+void os_thread_start(struct os_thread *, struct memdig *);
+void os_thread_join(struct os_thread *);
+void os_mutex_lock(struct os_thread *);
+void os_mutex_unlock(struct os_thread *);
 #endif
 
 /* MemDig API for platform */
