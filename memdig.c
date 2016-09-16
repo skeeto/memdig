@@ -31,9 +31,10 @@ os_handle   os_process_open(os_pid);
 void        os_process_close(os_handle);
 const char *os_last_error(void);
 
-void        os_thread_start(struct memdig *);
-void        os_mutex_lock(void);
-void        os_mutex_unlock(void);
+void        os_thread_start(struct os_thread *, struct memdig *);
+void        os_thread_join(struct os_thread *);
+void        os_mutex_lock(struct os_thread *);
+void        os_mutex_unlock(struct os_thread *);
 #endif
 
 /* MemDig API for platform */
@@ -236,35 +237,42 @@ os_last_error(void)
     return error_buffer;
 }
 
-static void
+struct os_thread {
+    HANDLE thread;
+    CRITICAL_SECTION mutex;
+};
+
+static unsigned __stdcall
 os_stub(void *arg)
 {
     memdig_locker(arg);
-}
-
-static CRITICAL_SECTION os_mutex;
-static BOOL os_mutex_initialized;
-
-static void
-os_thread_start(struct memdig *m)
-{
-    if (!os_mutex_initialized) {
-        InitializeCriticalSection(&os_mutex);
-        os_mutex_initialized = TRUE;
-    }
-    _beginthread(os_stub, 0, m);
+    _endthreadex(0);
 }
 
 static void
-os_mutex_lock(void)
+os_thread_start(struct os_thread *t, struct memdig *m)
 {
-    EnterCriticalSection(&os_mutex);
+    InitializeCriticalSection(&t->mutex);
+    t->thread = (HANDLE)_beginthreadex(0, 0, os_stub, m, 0, 0);
 }
 
 static void
-os_mutex_unlock(void)
+os_thread_join(struct os_thread *t)
 {
-    LeaveCriticalSection(&os_mutex);
+    WaitForSingleObject(t->thread, INFINITE);
+    DeleteCriticalSection(&t->mutex);
+}
+
+static void
+os_mutex_lock(struct os_thread *t)
+{
+    EnterCriticalSection(&t->mutex);
+}
+
+static void
+os_mutex_unlock(struct os_thread *t)
+{
+    LeaveCriticalSection(&t->mutex);
 }
 
 #elif __linux__
@@ -486,6 +494,11 @@ os_last_error(void)
     return strerror(errno);
 }
 
+struct os_thread {
+    pthread_t thread;
+    pthread_mutex_t mutex;
+};
+
 static void *
 os_stub(void *arg)
 {
@@ -493,26 +506,30 @@ os_stub(void *arg)
     return NULL;
 }
 
-static pthread_mutex_t os_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 static void
-os_thread_start(struct memdig *m)
+os_thread_start(struct os_thread *t, struct memdig *m)
 {
-    pthread_t thread;
-    pthread_create(&thread, 0, os_stub, m);
-    pthread_detach(thread);
+    pthread_mutex_init(&t->mutex, 0);
+    pthread_create(&t->thread, 0, os_stub, m);
 }
 
 static void
-os_mutex_lock(void)
+os_thread_join(struct os_thread *t)
 {
-    pthread_mutex_lock(&os_mutex);
+    pthread_join(t->thread, 0);
+    pthread_mutex_destroy(&t->mutex);
 }
 
 static void
-os_mutex_unlock(void)
+os_mutex_lock(struct os_thread *t)
 {
-    pthread_mutex_unlock(&os_mutex);
+    pthread_mutex_lock(&t->mutex);
+}
+
+static void
+os_mutex_unlock(struct os_thread *t)
+{
+    pthread_mutex_unlock(&t->mutex);
 }
 
 #endif // __linux__
@@ -1187,9 +1204,11 @@ command_parse(const char *c)
 struct memdig {
     os_pid id;
     os_handle target;
+    struct os_thread thread;
     enum value_type last_type;
     struct watchlist active;
     struct watchlist locked;
+    int running;
 };
 
 static void
@@ -1197,7 +1216,11 @@ memdig_locker(struct memdig *m)
 {
     for (;;) {
         os_sleep(0.1);
-        os_mutex_lock();
+        os_mutex_lock(&m->thread);
+        if (!m->running) {
+            os_mutex_unlock(&m->thread);
+            break;
+        }
         if (m->target)
             for (size_t i = 0; i < m->locked.count; i++) {
                 uintptr_t addr = m->locked.list[i].addr;
@@ -1205,15 +1228,18 @@ memdig_locker(struct memdig *m)
                 unsigned size = VALUE_SIZE(*value);
                 os_write_memory(m->target, addr, &value->value, size);
             }
-        os_mutex_unlock();
+        os_mutex_unlock(&m->thread);
     }
 }
 
 static void
 memdig_init(struct memdig *m)
 {
-    *m = (struct memdig){.last_type = VALUE_S32};
-    os_thread_start(m);
+    *m = (struct memdig){
+        .last_type = VALUE_S32,
+        .running = 1,
+    };
+    os_thread_start(&m->thread, m);
 }
 
 static void
@@ -1255,12 +1281,12 @@ memdig_exec(struct memdig *m, int argc, char **argv)
             } else if (argc != 2)
                 LOG_ERROR("wrong number of arguments\n");
             if (m->target) {
-                os_mutex_lock();
+                os_mutex_lock(&m->thread);
                 watchlist_free(&m->active);
                 watchlist_free(&m->locked);
                 os_process_close(m->target);
                 m->target = 0;
-                os_mutex_unlock();
+                os_mutex_unlock(&m->thread);
             }
             char *pattern = argv[1];
             switch (process_find(pattern, &m->id)) {
@@ -1271,7 +1297,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                     LOG_ERROR("ambiguous target '%s'\n", pattern);
                     break;
                 case FIND_SUCCESS:
-                    os_mutex_lock();
+                    os_mutex_lock(&m->thread);
                     if (!(m->target = os_process_open(m->id))) {
                         if (!m->target)
                             LOG_ERROR("open process %ld failed: %s\n",
@@ -1282,7 +1308,7 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                         watchlist_init(&m->locked, m->target);
                         printf("attached to %ld\n", (long)m->id);
                     }
-                    os_mutex_unlock();
+                    os_mutex_unlock(&m->thread);
                     break;
             }
         } break;
@@ -1456,13 +1482,13 @@ memdig_exec(struct memdig *m, int argc, char **argv)
                 }
                 m->last_type = value.type;
             }
-            os_mutex_lock();
+            os_mutex_lock(&m->thread);
             for (size_t i = 0; i < m->active.count; i++) {
                 uintptr_t addr = m->active.list[i].addr;
                 struct value *prev = &m->active.list[i].prev;
                 watchlist_push(&m->locked, addr, have_value ? &value : prev);
             }
-            os_mutex_unlock();
+            os_mutex_unlock(&m->thread);
         } break;
         case COMMAND_WAIT: {
             if (argc != 2)
@@ -1500,14 +1526,16 @@ fail:
 static void
 memdig_free(struct memdig *m)
 {
+    os_mutex_lock(&m->thread);
     if (m->target) {
-        os_mutex_lock();
         watchlist_free(&m->active);
         watchlist_free(&m->locked);
         os_process_close(m->target);
         m->target = 0;
-        os_mutex_unlock();
     }
+    m->running = 0;
+    os_mutex_unlock(&m->thread);
+    os_thread_join(&m->thread);
 }
 
 #define PROMPT(f)                               \
