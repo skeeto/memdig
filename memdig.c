@@ -298,7 +298,7 @@ process_iterator_next(struct process_iterator *i)
     for (;;) {
         if (i->i == i->count)
             return !(i->flags = PROCESS_ITERATOR_DONE);
-        i->pid = i->pids[++i->i];
+        i->pid = i->pids[i->i++];
         sprintf(i->buf, "/proc/%ld/status", (long)i->pid);
         FILE *f = fopen(i->buf, "r");
         if (f) {
@@ -329,7 +329,6 @@ process_iterator_init(struct process_iterator *i)
 {
     size_t size = 4096;
     *i = (struct process_iterator){
-        .i = (size_t)-1,
         .pids = malloc(sizeof(i->pids[0]) * size),
         .flags = PROCESS_ITERATOR_DONE,
     };
